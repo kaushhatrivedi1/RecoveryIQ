@@ -105,6 +105,9 @@ class ClientCreateRequest(BaseModel):
     name: str
     age: Optional[int] = None
     condition: Optional[str] = ""
+    height: Optional[float] = None
+    weight: Optional[float] = None
+    unit_system: Optional[str] = "imperial"
 
 
 class ClientScoreRequest(BaseModel):
@@ -151,6 +154,9 @@ def serialize_client_row(row):
         "id": row["id"],
         "name": row["name"],
         "age": row["age"],
+        "height": row["height"],
+        "weight": row["weight"],
+        "unit_system": row["unit_system"] or "imperial",
         "dob": row["dob"],
         "condition": row["condition"],
         "practitioner_id": row["practitioner_id"],
@@ -175,12 +181,23 @@ def days_ago(n: int):
     return (datetime.now() - timedelta(days=n)).strftime("%Y-%m-%d")
 
 
-def default_client_payload(name: str, age: Optional[int], condition: str, suffix: int):
+def default_client_payload(
+    name: str,
+    age: Optional[int],
+    condition: str,
+    suffix: int,
+    height: Optional[float] = None,
+    weight: Optional[float] = None,
+    unit_system: str = "imperial",
+):
     initials = "".join([part[:1] for part in name.split()[:2]]).upper() or "CL"
     return {
         "id": f"client-{suffix:03d}",
         "name": name,
         "age": age or 35,
+        "height": height,
+        "weight": weight,
+        "unit_system": unit_system or "imperial",
         "dob": "",
         "condition": condition or "New Client",
         "practitioner_id": "prac-001",
@@ -196,6 +213,9 @@ def demo_client_payload(name: str, age: int, condition: str, suffix: int):
             "id": f"client-{suffix:03d}",
             "name": name,
             "age": age,
+            "height": 66,
+            "weight": 152,
+            "unit_system": "imperial",
             "dob": "1983-06-15",
             "condition": condition,
             "practitioner_id": "prac-001",
@@ -220,6 +240,9 @@ def demo_client_payload(name: str, age: int, condition: str, suffix: int):
             "id": f"client-{suffix:03d}",
             "name": name,
             "age": age,
+            "height": 72,
+            "weight": 198,
+            "unit_system": "imperial",
             "dob": "1990-03-22",
             "condition": condition,
             "practitioner_id": "prac-001",
@@ -243,6 +266,9 @@ def demo_client_payload(name: str, age: int, condition: str, suffix: int):
             "id": f"client-{suffix:03d}",
             "name": name,
             "age": age,
+            "height": 64,
+            "weight": 164,
+            "unit_system": "imperial",
             "dob": "1970-11-08",
             "condition": condition,
             "practitioner_id": "prac-001",
@@ -274,6 +300,9 @@ def init_client_store():
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
             age INTEGER,
+            height REAL,
+            weight REAL,
+            unit_system TEXT,
             dob TEXT,
             condition TEXT,
             practitioner_id TEXT,
@@ -282,6 +311,14 @@ def init_client_store():
             recovery_scores TEXT NOT NULL
         )
     """)
+
+    existing_columns = {row["name"] for row in cur.execute("PRAGMA table_info(clients)").fetchall()}
+    if "height" not in existing_columns:
+        cur.execute("ALTER TABLE clients ADD COLUMN height REAL")
+    if "weight" not in existing_columns:
+        cur.execute("ALTER TABLE clients ADD COLUMN weight REAL")
+    if "unit_system" not in existing_columns:
+        cur.execute("ALTER TABLE clients ADD COLUMN unit_system TEXT DEFAULT 'imperial'")
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS leads (
@@ -318,13 +355,16 @@ def init_client_store():
         for seed in seeds:
             cur.execute(
                 """
-                INSERT INTO clients (id, name, age, dob, condition, practitioner_id, avatar, sessions, recovery_scores)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO clients (id, name, age, height, weight, unit_system, dob, condition, practitioner_id, avatar, sessions, recovery_scores)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     seed["id"],
                     seed["name"],
                     seed["age"],
+                    seed.get("height"),
+                    seed.get("weight"),
+                    seed.get("unit_system", "imperial"),
                     seed["dob"],
                     seed["condition"],
                     seed["practitioner_id"],
@@ -339,13 +379,18 @@ def init_client_store():
             "Marcus Williams": demo_client_payload("Marcus Williams", 35, "Shoulder Tension / Desk Worker", 2),
             "Elena Rodriguez": demo_client_payload("Elena Rodriguez", 55, "Post-Surgical Lower Back Recovery", 3),
         }
-        rows = cur.execute("SELECT id, name, sessions, recovery_scores FROM clients").fetchall()
+        rows = cur.execute("SELECT id, name, sessions, recovery_scores, height, weight, unit_system FROM clients").fetchall()
         for row in rows:
             demo = demo_backfill.get(row["name"])
             if not demo:
                 continue
             sessions = json.loads(row["sessions"] or "[]")
             scores = json.loads(row["recovery_scores"] or "[]")
+            if row["height"] is None or row["weight"] is None or not row["unit_system"]:
+                cur.execute(
+                    "UPDATE clients SET height = COALESCE(height, ?), weight = COALESCE(weight, ?), unit_system = COALESCE(unit_system, ?) WHERE id = ?",
+                    (demo.get("height"), demo.get("weight"), demo.get("unit_system", "imperial"), row["id"]),
+                )
             if len(sessions) == 0:
                 cur.execute("UPDATE clients SET sessions = ? WHERE id = ?", (json.dumps(demo["sessions"]), row["id"]))
             if len(scores) <= 1:
@@ -898,16 +943,27 @@ def create_client(req: ClientCreateRequest):
     conn = get_db()
     cur = conn.cursor()
     next_suffix = cur.execute("SELECT COUNT(*) AS count FROM clients").fetchone()["count"] + 1
-    client = default_client_payload(req.name.strip(), req.age, req.condition or "New Client", next_suffix)
+    client = default_client_payload(
+        req.name.strip(),
+        req.age,
+        req.condition or "New Client",
+        next_suffix,
+        req.height,
+        req.weight,
+        req.unit_system or "imperial",
+    )
     cur.execute(
         """
-        INSERT INTO clients (id, name, age, dob, condition, practitioner_id, avatar, sessions, recovery_scores)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO clients (id, name, age, height, weight, unit_system, dob, condition, practitioner_id, avatar, sessions, recovery_scores)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             client["id"],
             client["name"],
             client["age"],
+            client["height"],
+            client["weight"],
+            client["unit_system"],
             client["dob"],
             client["condition"],
             client["practitioner_id"],

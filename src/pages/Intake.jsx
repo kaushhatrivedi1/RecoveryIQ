@@ -22,6 +22,7 @@ import {
   buildResumePayload,
   buildStartPayload,
   buildStopPayload,
+  getHydrawavBaseUrl,
   hydrawavLogin,
   hydrawavPublish,
 } from '../services/hydrawav';
@@ -30,6 +31,16 @@ import VoiceIntake from '../components/VoiceIntake';
 import GuidedAssessment from '../components/GuidedAssessment';
 import SessionPlan from '../components/SessionPlan';
 import { trackEvent } from '../services/marketing';
+
+function formatBodyContext(patient) {
+  if (!patient) return '';
+  const unitSystem = patient.unit_system || 'imperial';
+  const parts = [];
+  if (patient.age) parts.push(`Age ${patient.age}`);
+  if (patient.height) parts.push(unitSystem === 'metric' ? `${patient.height} cm` : `${patient.height} in`);
+  if (patient.weight) parts.push(unitSystem === 'metric' ? `${patient.weight} kg` : `${patient.weight} lb`);
+  return parts.join(' · ');
+}
 
 function LiveSessionCard({
   patient,
@@ -209,6 +220,9 @@ export default function Intake({ publicMode = false }) {
   const [clientForm, setClientForm] = useState({
     name: '',
     age: '',
+    height: '',
+    weight: '',
+    unit_system: 'imperial',
     condition: '',
   });
 
@@ -313,43 +327,72 @@ export default function Intake({ publicMode = false }) {
   async function handleStartSession(protocol = selectedProtocol) {
     setSelectedProtocol(protocol);
 
+    const resolvedHydrawavBase = getHydrawavBaseUrl(mqttBase || mqttBaseUrl);
+
     let token = mqttToken;
     if (!token) {
       try {
-        token = await hydrawavLogin({ baseUrl: mqttBase, username: mqttUser, password: mqttPass });
+        token = await hydrawavLogin({
+          baseUrl: resolvedHydrawavBase,
+          username: mqttUser,
+          password: mqttPass,
+        });
         if (token) {
           setMqttToken(token);
-          setMqttBaseUrl(mqttBase);
+          setMqttBaseUrl(resolvedHydrawavBase);
         }
-      } catch {
-        alert('MQTT auth failed — check credentials');
+      } catch (error) {
+        console.error('Hydrawav auth failed', {
+          baseUrl: resolvedHydrawavBase,
+          error: error?.message || error,
+        });
+        alert(`Hydrawav auth failed at ${resolvedHydrawavBase} — check credentials`);
         return;
       }
     }
 
     const payload = buildStartPayload(deviceMac, protocol);
-    const ok = await hydrawavPublish({ baseUrl: mqttBase, token, payload });
-    if (ok !== false) {
+    try {
+      const ok = await hydrawavPublish({
+        baseUrl: resolvedHydrawavBase,
+        token,
+        payload,
+      });
+
+      if (ok === false) {
+        throw new Error('Hydrawav publish returned false');
+      }
+
       if (patientId && patient) {
         const latestScore = patient.recovery_scores?.[patient.recovery_scores.length - 1]?.score || 0;
-        await addPatientSession(patientId, {
+        addPatientSession(patientId, {
           protocol: protocol?.name || selectedProtocol.name,
           duration: protocol?.duration ?? selectedProtocol.duration,
           zones: assessmentData?.zones || [],
           before_score: latestScore,
           after_score: latestScore,
+        }).catch((error) => {
+          console.error('Local session persistence failed after Hydrawav start', error);
         });
       }
+
       setTimeLeft((protocol?.duration ?? selectedProtocol.duration) * 60);
       setSessionState('running');
       setUiMode('session');
+    } catch (error) {
+      console.error('Hydrawav publish failed', {
+        baseUrl: resolvedHydrawavBase,
+        payload,
+        error: error?.message || error,
+      });
+      alert(`Session start failed at ${resolvedHydrawavBase}`);
     }
   }
 
   async function handlePause() {
     if (mqttToken) {
       await hydrawavPublish({
-        baseUrl: mqttBaseUrl || mqttBase,
+        baseUrl: getHydrawavBaseUrl(mqttBaseUrl || mqttBase),
         token: mqttToken,
         payload: buildPausePayload(deviceMac),
       });
@@ -360,7 +403,7 @@ export default function Intake({ publicMode = false }) {
   async function handleResume() {
     if (mqttToken) {
       await hydrawavPublish({
-        baseUrl: mqttBaseUrl || mqttBase,
+        baseUrl: getHydrawavBaseUrl(mqttBaseUrl || mqttBase),
         token: mqttToken,
         payload: buildResumePayload(deviceMac),
       });
@@ -371,7 +414,7 @@ export default function Intake({ publicMode = false }) {
   async function handleStop() {
     if (mqttToken) {
       await hydrawavPublish({
-        baseUrl: mqttBaseUrl || mqttBase,
+        baseUrl: getHydrawavBaseUrl(mqttBaseUrl || mqttBase),
         token: mqttToken,
         payload: buildStopPayload(deviceMac),
       });
@@ -402,10 +445,13 @@ export default function Intake({ publicMode = false }) {
       const created = await addPatient({
         name: clientForm.name.trim(),
         age: Number(clientForm.age) || 0,
+        height: Number(clientForm.height) || null,
+        weight: Number(clientForm.weight) || null,
+        unit_system: clientForm.unit_system || 'imperial',
         condition: clientForm.condition.trim(),
       });
       setShowClientForm(false);
-      setClientForm({ name: '', age: '', condition: '' });
+      setClientForm({ name: '', age: '', height: '', weight: '', unit_system: 'imperial', condition: '' });
       setClientQuery(created.name);
       navigate(`/intake?patient=${created.id}`);
     } finally {
@@ -493,7 +539,7 @@ export default function Intake({ publicMode = false }) {
                           <div className="text-sm text-slate-500">{entry.condition}</div>
                         </div>
                         <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-400">
-                          {entry.age || 'Age n/a'}
+                          {formatBodyContext(entry) || 'Profile pending'}
                         </div>
                       </button>
                     );
@@ -535,6 +581,28 @@ export default function Intake({ publicMode = false }) {
                 className="riq-input text-sm"
                 placeholder="Age"
                 inputMode="numeric"
+              />
+              <select
+                value={clientForm.unit_system}
+                onChange={(e) => setClientForm((current) => ({ ...current, unit_system: e.target.value }))}
+                className="riq-input text-sm"
+              >
+                <option value="imperial">Imperial (in/lb)</option>
+                <option value="metric">Metric (cm/kg)</option>
+              </select>
+              <input
+                value={clientForm.height}
+                onChange={(e) => setClientForm((current) => ({ ...current, height: e.target.value }))}
+                className="riq-input text-sm"
+                placeholder={clientForm.unit_system === 'metric' ? 'Height (cm)' : 'Height (in)'}
+                inputMode="decimal"
+              />
+              <input
+                value={clientForm.weight}
+                onChange={(e) => setClientForm((current) => ({ ...current, weight: e.target.value }))}
+                className="riq-input text-sm"
+                placeholder={clientForm.unit_system === 'metric' ? 'Weight (kg)' : 'Weight (lb)'}
+                inputMode="decimal"
               />
               <input
                 value={clientForm.condition}

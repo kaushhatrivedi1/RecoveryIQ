@@ -63,6 +63,14 @@ function zoneLabel(zoneId) {
   return BODY_ZONES.find((entry) => entry.id === zoneId)?.label || zoneId;
 }
 
+function bodyContextSummary(patient) {
+  const unitSystem = patient.unit_system || 'imperial';
+  const parts = [];
+  if (patient.height) parts.push(unitSystem === 'metric' ? `${patient.height} cm tall` : `${patient.height} in tall`);
+  if (patient.weight) parts.push(unitSystem === 'metric' ? `${patient.weight} kg` : `${patient.weight} lb`);
+  return parts.join(' and ');
+}
+
 function deriveJourneyInsights(patient, latest, delta) {
   const sessions = patient.sessions || [];
   const latestSession = sessions[sessions.length - 1] || null;
@@ -71,6 +79,7 @@ function deriveJourneyInsights(patient, latest, delta) {
     ? Number((recentGains.reduce((sum, gain) => sum + gain, 0) / recentGains.length).toFixed(1))
     : 0;
   const activeZones = (latestSession?.zones || []).map(zoneLabel);
+  const bodyContext = bodyContextSummary(patient);
 
   let momentum = 'Your recovery is stable right now.';
   if (delta > 0) momentum = `Recovery is trending upward by ${delta} points since the last score update.`;
@@ -101,6 +110,13 @@ function deriveJourneyInsights(patient, latest, delta) {
           ? 'Next step: reduce complexity, focus on one primary area, and compare before/after movement after the next session.'
           : 'Next step: complete one guided intake, one session, and one follow-up check-in so the recovery model has enough signal to adapt.';
 
+  const loadContext =
+    bodyContext && activeZones.some((zone) => /hip|knee|back/i.test(zone))
+      ? `Body-load context is available (${bodyContext}), which helps interpret how hip, knee, and lower-back demand may show up across sessions.`
+      : bodyContext
+        ? `Body context is available (${bodyContext}) and can help personalize recovery planning over time.`
+        : 'Add height and weight to the client profile if you want more personalized body-load context in the recovery feedback.';
+
   return {
     latestSession,
     avgGain,
@@ -110,6 +126,7 @@ function deriveJourneyInsights(patient, latest, delta) {
     consistency,
     bottleneck,
     nextStep,
+    loadContext,
     adherenceText:
       latest?.check_in === 'great'
         ? 'Self-check feedback is strong today, which supports progressing carefully.'
@@ -439,6 +456,7 @@ export default function Journey() {
                 </div>
                 <p className="text-sm leading-6 text-slate-600">{journeyInsights.consistency}</p>
                 <p className="mt-3 text-sm leading-6 text-slate-600">{journeyInsights.bottleneck}</p>
+                <p className="mt-3 text-sm leading-6 text-slate-600">{journeyInsights.loadContext}</p>
               </div>
               <div className="rounded-[1.4rem] bg-slate-50 px-4 py-4">
                 <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-slate-900">

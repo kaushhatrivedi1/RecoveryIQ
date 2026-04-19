@@ -73,6 +73,7 @@ const TABS = [
   { id: 'pad', label: 'Pad Placement', Icon: Sun },
   { id: 'analysis1', label: 'Analysis 1', Icon: Brain },
   { id: 'analysis2', label: 'Analysis 2', Icon: Activity },
+  { id: 'kinetic_chain', label: 'Kinetic Chain', Icon: Network },
   { id: 'exercises', label: 'At Home Exercises', Icon: Dumbbell },
 ];
 
@@ -534,25 +535,64 @@ function buildAssistantReply(question, primaryAnalysis, secondaryAnalysis) {
   return `The strongest takeaway is that ${primaryAnalysis.summary.charAt(0).toLowerCase() + primaryAnalysis.summary.slice(1)} If you want, ask about the driver, the compensations, or what to retest after treatment.`;
 }
 
-function ChatAssistant({ primaryAnalysis, secondaryAnalysis }) {
+function ChatAssistant({ primaryAnalysis, secondaryAnalysis, assessmentData }) {
+  const CLAUDE_KEY = import.meta.env.VITE_CLAUDE_KEY || '';
   const [messages, setMessages] = useState(() => [
     {
       role: 'assistant',
       text:
-        `Hello! I've reviewed your biomechanical analysis report. Here's a quick summary:\n\n` +
+        `Hello! I've reviewed this biomechanical analysis. Here's a quick summary:\n\n` +
         `Primary concern: ${primaryAnalysis.title}\n` +
         `Key finding: ${primaryAnalysis.summary}\n\n` +
-        `I can help explain any part of this report. Try asking what kinetic chain means, what the primary driver is, or what to tell the practitioner.`,
+        `Ask me about the kinetic chain, primary driver, suggested retests, or what to tell the patient.`,
     },
   ]);
   const [input, setInput] = useState('');
+  const [sending, setSending] = useState(false);
 
-  function sendMessage() {
+  async function sendMessage() {
     const trimmed = input.trim();
-    if (!trimmed) return;
-    const reply = buildAssistantReply(trimmed, primaryAnalysis, secondaryAnalysis);
-    setMessages((prev) => [...prev, { role: 'user', text: trimmed }, { role: 'assistant', text: reply }]);
+    if (!trimmed || sending) return;
     setInput('');
+    setMessages((prev) => [...prev, { role: 'user', text: trimmed }]);
+    setSending(true);
+
+    let reply;
+    if (CLAUDE_KEY) {
+      try {
+        const zones = (assessmentData?.zones || []).map((z) => z.replaceAll('_', ' ')).join(', ');
+        const systemPrompt = `You are a kinetic chain analysis assistant for Hydrawav3 practitioners.
+Patient assessment context:
+- Primary pattern: ${primaryAnalysis.title} (${primaryAnalysis.probability} confidence)
+- Driver: ${primaryAnalysis.driver}
+- Summary: ${primaryAnalysis.summary}
+- Alternative pattern: ${secondaryAnalysis.title} (${secondaryAnalysis.probability} confidence)
+- Focus zones: ${zones || 'not specified'}
+
+Keep responses to 2-3 sentences. Use wellness language — you support practitioners, never replace them. Avoid clinical diagnosis language.`;
+
+        const history = messages.filter((m) => m.role !== 'assistant' || messages.indexOf(m) > 0);
+        const apiMessages = [
+          ...history.map((m) => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.text })),
+          { role: 'user', content: trimmed },
+        ];
+
+        const res = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-api-key': CLAUDE_KEY, 'anthropic-version': '2023-06-01' },
+          body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 250, system: systemPrompt, messages: apiMessages }),
+        });
+        const data = await res.json();
+        reply = data.content?.[0]?.text || buildAssistantReply(trimmed, primaryAnalysis, secondaryAnalysis);
+      } catch {
+        reply = buildAssistantReply(trimmed, primaryAnalysis, secondaryAnalysis);
+      }
+    } else {
+      reply = buildAssistantReply(trimmed, primaryAnalysis, secondaryAnalysis);
+    }
+
+    setMessages((prev) => [...prev, { role: 'assistant', text: reply }]);
+    setSending(false);
   }
 
   return (
@@ -584,15 +624,17 @@ function ChatAssistant({ primaryAnalysis, secondaryAnalysis }) {
           onKeyDown={(event) => {
             if (event.key === 'Enter') sendMessage();
           }}
-          placeholder="Ask about this analysis..."
-          className="riq-input !rounded-full !bg-white text-sm"
+          placeholder="Ask about this analysis…"
+          disabled={sending}
+          className="riq-input !rounded-full !bg-white text-sm disabled:opacity-60"
         />
         <button
           type="button"
           onClick={sendMessage}
-          className="flex h-14 w-14 items-center justify-center rounded-[18px] bg-[var(--riq-primary)] text-white transition-colors hover:bg-[var(--riq-primary-deep)]"
+          disabled={sending}
+          className="flex h-14 w-14 items-center justify-center rounded-[18px] bg-[var(--riq-primary)] text-white transition-colors hover:bg-[var(--riq-primary-deep)] disabled:opacity-60"
         >
-          <Send size={18} />
+          {sending ? <div className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" /> : <Send size={18} />}
         </button>
         <button
           type="button"
@@ -723,6 +765,371 @@ function AnalysisPanel({ analysis, emphasis = 'primary' }) {
   );
 }
 
+// ── Kinetic Chain Visualization ──────────────────────────────────────────────
+
+const CHAIN_COLORS = {
+  primary:     { fill: '#EF4444', label: 'Primary',     textClass: 'text-red-600',    bgClass: 'bg-red-50',    borderClass: 'border-red-200' },
+  secondary:   { fill: '#F97316', label: 'Secondary',   textClass: 'text-orange-600', bgClass: 'bg-orange-50', borderClass: 'border-orange-200' },
+  stabilizing: { fill: '#22C55E', label: 'Stabilizing', textClass: 'text-green-600',  bgClass: 'bg-green-50',  borderClass: 'border-green-200' },
+  chain_flow:  { fill: '#3B82F6', label: 'Chain Flow',  textClass: 'text-blue-600',   bgClass: 'bg-blue-50',   borderClass: 'border-blue-200' },
+};
+
+// 200×420 viewBox, front-facing silhouette
+const MUSCLE_REGIONS = {
+  neck:             { cx: 100, cy: 68,  rx: 13, ry: 11, rear: false, label: 'Neck' },
+  left_shoulder:    { cx: 52,  cy: 86,  rx: 20, ry: 14, rear: false, label: 'L. Shoulder' },
+  right_shoulder:   { cx: 148, cy: 86,  rx: 20, ry: 14, rear: false, label: 'R. Shoulder' },
+  left_chest:       { cx: 74,  cy: 118, rx: 24, ry: 20, rear: false, label: 'L. Chest' },
+  right_chest:      { cx: 126, cy: 118, rx: 24, ry: 20, rear: false, label: 'R. Chest' },
+  left_lat:         { cx: 60,  cy: 148, rx: 17, ry: 26, rear: false, label: 'L. Lat' },
+  right_lat:        { cx: 140, cy: 148, rx: 17, ry: 26, rear: false, label: 'R. Lat' },
+  thoracic_spine:   { cx: 100, cy: 145, rx: 15, ry: 34, rear: true,  label: 'Thoracic' },
+  lumbar:           { cx: 100, cy: 192, rx: 20, ry: 22, rear: true,  label: 'Lumbar' },
+  left_hip:         { cx: 70,  cy: 218, rx: 25, ry: 20, rear: false, label: 'L. Hip Flexor' },
+  right_hip:        { cx: 130, cy: 218, rx: 25, ry: 20, rear: false, label: 'R. Hip Flexor' },
+  left_glute:       { cx: 68,  cy: 214, rx: 24, ry: 20, rear: true,  label: 'L. Glute' },
+  right_glute:      { cx: 132, cy: 214, rx: 24, ry: 20, rear: true,  label: 'R. Glute' },
+  left_piriformis:  { cx: 66,  cy: 210, rx: 17, ry: 13, rear: true,  label: 'L. Piriformis' },
+  right_piriformis: { cx: 134, cy: 210, rx: 17, ry: 13, rear: true,  label: 'R. Piriformis' },
+  left_quad:        { cx: 70,  cy: 258, rx: 20, ry: 40, rear: false, label: 'L. Quad' },
+  right_quad:       { cx: 130, cy: 258, rx: 20, ry: 40, rear: false, label: 'R. Quad' },
+  left_hamstring:   { cx: 70,  cy: 258, rx: 18, ry: 38, rear: true,  label: 'L. Hamstring' },
+  right_hamstring:  { cx: 130, cy: 258, rx: 18, ry: 38, rear: true,  label: 'R. Hamstring' },
+  left_tibialis:    { cx: 63,  cy: 332, rx: 10, ry: 28, rear: false, label: 'L. Tibialis' },
+  right_tibialis:   { cx: 137, cy: 332, rx: 10, ry: 28, rear: false, label: 'R. Tibialis' },
+  left_peroneus:    { cx: 77,  cy: 330, rx: 9,  ry: 26, rear: false, label: 'L. Peroneus' },
+  right_peroneus:   { cx: 123, cy: 330, rx: 9,  ry: 26, rear: false, label: 'R. Peroneus' },
+  left_calf:        { cx: 70,  cy: 338, rx: 13, ry: 28, rear: true,  label: 'L. Calf' },
+  right_calf:       { cx: 130, cy: 338, rx: 13, ry: 28, rear: true,  label: 'R. Calf' },
+  left_ankle:       { cx: 65,  cy: 368, rx: 12, ry: 11, rear: false, label: 'L. Ankle' },
+  right_ankle:      { cx: 135, cy: 368, rx: 12, ry: 11, rear: false, label: 'R. Ankle' },
+};
+
+const MUSCLE_KEYWORD_MAP = [
+  { keys: ['piriformis'],                                           regions: ['left_piriformis', 'right_piriformis'] },
+  { keys: ['hip external rotator', 'external rotator', 'deep hip'], regions: ['left_piriformis', 'right_piriformis', 'left_glute', 'right_glute'] },
+  { keys: ['hip capsule', 'posterior hip capsule'],                  regions: ['left_glute', 'right_glute'] },
+  { keys: ['gluteus medius', 'glute med'],                           regions: ['left_glute', 'right_glute'] },
+  { keys: ['gluteus maximus', 'gluteal', 'glute max'],               regions: ['left_glute', 'right_glute'] },
+  { keys: ['tibialis anterior', 'tibialis'],                         regions: ['left_tibialis', 'right_tibialis'] },
+  { keys: ['peroneus', 'fibularis'],                                 regions: ['left_peroneus', 'right_peroneus'] },
+  { keys: ['gastrocnemius', 'gastroc', 'soleus'],                    regions: ['left_calf', 'right_calf'] },
+  { keys: ['ankle joint', 'ankle capsule', 'ankle'],                 regions: ['left_ankle', 'right_ankle'] },
+  { keys: ['quadricep', 'rectus femoris', 'vastus'],                 regions: ['left_quad', 'right_quad'] },
+  { keys: ['hamstring', 'biceps femoris'],                           regions: ['left_hamstring', 'right_hamstring'] },
+  { keys: ['hip flexor', 'iliopsoas', 'psoas', 'iliacus'],           regions: ['left_hip', 'right_hip'] },
+  { keys: ['thoracolumbar', 'thoracic fascia', 'thoracic spine'],    regions: ['thoracic_spine'] },
+  { keys: ['multifidus', 'rotatores', 'segmental rotator'],          regions: ['thoracic_spine', 'lumbar'] },
+  { keys: ['erector spinae', 'iliocostalis'],                        regions: ['thoracic_spine', 'lumbar'] },
+  { keys: ['quadratus lumborum'],                                    regions: ['lumbar'] },
+  { keys: ['transversus abdominis', 'core stabilizer'],              regions: ['lumbar'] },
+  { keys: ['latissimus', 'lat dorsi'],                               regions: ['left_lat', 'right_lat'] },
+  { keys: ['shoulder', 'deltoid', 'rotator cuff', 'supraspinatus'],  regions: ['left_shoulder', 'right_shoulder'] },
+  { keys: ['trapezius', 'traps', 'neck', 'cervical'],                regions: ['neck'] },
+  { keys: ['chest', 'pec', 'pectoralis'],                            regions: ['left_chest', 'right_chest'] },
+  { keys: ['hip'],                                                   regions: ['left_hip', 'right_hip'] },
+];
+
+function getRegionsForMuscle(muscleName, side) {
+  const lower = (muscleName || '').toLowerCase();
+  const matched = new Set();
+  for (const { keys, regions } of MUSCLE_KEYWORD_MAP) {
+    if (keys.some((k) => lower.includes(k))) {
+      regions.forEach((r) => matched.add(r));
+      break;
+    }
+  }
+  const all = [...matched];
+  if (side === 'right') return all.filter((r) => !r.startsWith('left_'));
+  if (side === 'left') return all.filter((r) => !r.startsWith('right_'));
+  return all;
+}
+
+function getDefaultChainData(assessmentData) {
+  const zones = assessmentData?.zones || [];
+  const hasHip = zones.some((z) => z.includes('hip'));
+  const hasShoulder = zones.some((z) => z.includes('shoulder'));
+  const hasBack = zones.some((z) => z.includes('back'));
+
+  if (hasHip) {
+    return {
+      patternName: 'Hip Mobility Restriction with Lower Limb Compensation',
+      description: 'Reduced hip mobility is driving compensatory loading patterns through the knee and ankle joints. The kinetic chain disruption begins at the hip complex and propagates distally through the lower extremity.',
+      chain: [
+        { name: 'Piriformis', side: 'bilateral', role: 'primary', detail: 'Primary restriction limiting hip external rotation and proximal force transfer.' },
+        { name: 'Deep hip external rotators', side: 'bilateral', role: 'primary', detail: 'Contributing to hip capsule stiffness and rotational mobility deficit.' },
+        { name: 'Gluteus medius', side: 'bilateral', role: 'secondary', detail: 'Lateral stabilizer overload as it compensates for restricted rotational movement.' },
+        { name: 'Quadriceps', side: 'bilateral', role: 'stabilizing', detail: 'Increased anterior chain loading compensating for reduced hip contribution.' },
+        { name: 'Tibialis anterior', side: 'bilateral', role: 'chain_flow', detail: 'Distal compensation maintaining balance under restricted hip mechanics.' },
+        { name: 'Ankle joint capsule', side: 'bilateral', role: 'chain_flow', detail: 'Secondary adaptation site absorbing force not dispersed at the hip.' },
+      ],
+    };
+  }
+  if (hasShoulder || hasBack) {
+    return {
+      patternName: 'Thoracic Restriction with Shoulder Compensation',
+      description: 'Thoracic spine mobility limitation is driving compensatory patterns through the shoulder complex and lumbar region. The restriction propagates both proximally into the shoulder and distally into the lumbar spine.',
+      chain: [
+        { name: 'Thoracolumbar fascia', side: 'bilateral', role: 'primary', detail: 'Primary restriction limiting thoracic rotation and tensile force distribution.' },
+        { name: 'Erector spinae', side: 'bilateral', role: 'primary', detail: 'Bilateral overload as spinal extensors compensate for lost thoracic mobility.' },
+        { name: 'Latissimus dorsi', side: 'bilateral', role: 'secondary', detail: 'Tension transmission through lateral chain affecting shoulder mechanics.' },
+        { name: 'Rotator cuff', side: 'bilateral', role: 'secondary', detail: 'Compensatory loading as shoulder accommodates thoracic restriction.' },
+        { name: 'Quadratus lumborum', side: 'bilateral', role: 'stabilizing', detail: 'Lateral stabilizers overwork when thoracic mobility is limited.' },
+      ],
+    };
+  }
+  return {
+    patternName: 'Regional Movement Restriction Pattern',
+    description: 'Assessment reveals a regional movement restriction with compensatory load distribution across adjacent structures. The primary driver is creating downstream kinetic chain adaptation.',
+    chain: [
+      { name: 'Hip flexors', side: 'bilateral', role: 'primary', detail: 'Primary restriction affecting anterior chain mobility and load transfer.' },
+      { name: 'Gluteus medius', side: 'bilateral', role: 'secondary', detail: 'Lateral hip stabilizers in compensatory overload.' },
+      { name: 'Quadratus lumborum', side: 'bilateral', role: 'stabilizing', detail: 'Core stabilizers maintaining spinal position during compensatory movement.' },
+      { name: 'Quadriceps', side: 'bilateral', role: 'chain_flow', detail: 'Distal chain adaptation responding to proximal restriction.' },
+    ],
+  };
+}
+
+async function fetchKineticChainData(assessmentData) {
+  const CLAUDE_KEY = import.meta.env.VITE_CLAUDE_KEY || '';
+  if (!CLAUDE_KEY) return getDefaultChainData(assessmentData);
+
+  const zones = (assessmentData?.zones || []).map((z) => z.replaceAll('_', ' ')).join(', ');
+  const romFindings = assessmentData?.romFindings || [];
+  const romSummary = romFindings.map((f) => `${f.test.replace(/_/g, ' ')}: ${f.body_part} (${f.side})`).join('; ');
+
+  const prompt = `Patient zones of concern: ${zones || 'not specified'}. ROM findings: ${romSummary || 'not specified'}.
+
+Generate a kinetic chain analysis. Return ONLY this JSON (no markdown):
+{
+  "patternName": "<short pattern name>",
+  "description": "<2-3 sentence description of the kinetic chain dysfunction>",
+  "chain": [
+    { "name": "<anatomical structure name>", "side": "<left|right|bilateral>", "role": "<primary|secondary|stabilizing|chain_flow>", "detail": "<1 sentence role description>" }
+  ]
+}
+
+Include 5-8 structures flowing logically from primary driver to compensatory regions.`;
+
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': CLAUDE_KEY, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 700, messages: [{ role: 'user', content: prompt }] }),
+    });
+    const data = await res.json();
+    const text = data.content?.[0]?.text || '';
+    const clean = text.replace(/^```(?:json)?\s*|\s*```$/g, '').trim();
+    return JSON.parse(clean);
+  } catch {
+    return getDefaultChainData(assessmentData);
+  }
+}
+
+function BodySVGSilhouette() {
+  return (
+    <g fill="#1e293b" opacity="0.1">
+      <ellipse cx="100" cy="36" rx="22" ry="26" />
+      <rect x="91" y="60" width="18" height="18" rx="5" />
+      <ellipse cx="100" cy="84" rx="52" ry="16" />
+      <path d="M52 76 C42 90 40 135 42 220 L158 220 C160 135 158 90 148 76 Z" />
+      <path d="M50 80 C34 92 18 128 16 170 L28 172 C30 140 44 108 56 92 Z" />
+      <path d="M16 170 C12 190 14 212 18 228 L28 226 C26 212 26 192 28 172 Z" />
+      <path d="M150 80 C166 92 182 128 184 170 L172 172 C170 140 156 108 144 92 Z" />
+      <path d="M184 170 C188 190 186 212 182 228 L172 226 C174 212 174 192 172 172 Z" />
+      <ellipse cx="100" cy="226" rx="50" ry="18" />
+      <path d="M68 226 C54 244 50 282 54 308 L76 308 C74 284 72 250 80 230 Z" />
+      <path d="M54 308 C52 334 54 360 60 376 L76 376 C72 360 70 334 76 308 Z" />
+      <ellipse cx="66" cy="384" rx="18" ry="9" />
+      <path d="M132 226 C146 244 150 282 146 308 L124 308 C126 284 128 250 120 230 Z" />
+      <path d="M146 308 C148 334 146 360 140 376 L124 376 C128 360 130 334 124 308 Z" />
+      <ellipse cx="134" cy="384" rx="18" ry="9" />
+    </g>
+  );
+}
+
+function KineticChainTab({ assessmentData }) {
+  const [chainData, setChainData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [showLabels, setShowLabels] = useState(false);
+
+  useEffect(() => {
+    setLoading(true);
+    fetchKineticChainData(assessmentData).then((data) => {
+      setChainData(data);
+      setLoading(false);
+    });
+  }, [assessmentData]);
+
+  const regionRoleMap = useMemo(() => {
+    if (!chainData) return {};
+    const priority = { primary: 4, secondary: 3, stabilizing: 2, chain_flow: 1 };
+    const map = {};
+    chainData.chain.forEach((item) => {
+      getRegionsForMuscle(item.name, item.side).forEach((r) => {
+        if (!map[r] || priority[item.role] > priority[map[r]]) map[r] = item.role;
+      });
+    });
+    return map;
+  }, [chainData]);
+
+  const activeRegionEntries = Object.entries(MUSCLE_REGIONS).filter(([id]) => regionRoleMap[id]);
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <div className="text-[10px] font-black uppercase tracking-[0.24em] text-slate-400">Kinetic Chain Visualization</div>
+          <h3 className="mt-1 text-xl font-black leading-tight text-slate-950">
+            {loading ? 'Analyzing kinetic chain…' : (chainData?.patternName || 'Movement Pattern')}
+          </h3>
+        </div>
+        <button
+          type="button"
+          onClick={() => setShowLabels((v) => !v)}
+          className="riq-button-secondary !min-h-0 !px-4 !py-2 text-[10px] uppercase tracking-[0.18em]"
+        >
+          <Eye size={13} />
+          {showLabels ? 'Hide Labels' : 'Show Labels'}
+        </button>
+      </div>
+
+      <div className="grid gap-6 xl:grid-cols-[280px_1fr]">
+        {/* SVG body map */}
+        <div className="riq-card flex flex-col items-center p-5">
+          <div className="mb-4 grid grid-cols-2 gap-x-4 gap-y-2">
+            {Object.entries(CHAIN_COLORS).map(([key, val]) => (
+              <div key={key} className="flex items-center gap-2">
+                <div className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: val.fill }} />
+                <span className="text-[9px] font-black uppercase tracking-[0.14em] text-slate-500">{val.label}</span>
+              </div>
+            ))}
+          </div>
+
+          <svg viewBox="0 0 200 420" className="w-full max-w-[200px]" aria-label="Kinetic chain body map">
+            <BodySVGSilhouette />
+
+            {activeRegionEntries.map(([id, region]) => {
+              const role = regionRoleMap[id];
+              const color = CHAIN_COLORS[role]?.fill ?? '#94a3b8';
+              return (
+                <ellipse
+                  key={id}
+                  cx={region.cx}
+                  cy={region.cy}
+                  rx={region.rx}
+                  ry={region.ry}
+                  fill={color}
+                  fillOpacity={region.rear ? 0.3 : 0.68}
+                  stroke={color}
+                  strokeWidth={region.rear ? 1.5 : 0}
+                  strokeDasharray={region.rear ? '3 2' : undefined}
+                />
+              );
+            })}
+
+            {showLabels
+              ? activeRegionEntries.map(([id, region]) => (
+                  <text
+                    key={`lbl-${id}`}
+                    x={region.cx}
+                    y={region.cy}
+                    textAnchor="middle"
+                    dominantBaseline="middle"
+                    fontSize="4.5"
+                    fontWeight="700"
+                    fill="white"
+                    style={{ pointerEvents: 'none' }}
+                  >
+                    {region.label}
+                  </text>
+                ))
+              : null}
+
+            {!loading && chainData?.chain.map((item, i) => {
+              const regions = getRegionsForMuscle(item.name, item.side);
+              const r = regions.find((rid) => MUSCLE_REGIONS[rid]);
+              if (!r) return null;
+              const reg = MUSCLE_REGIONS[r];
+              const color = CHAIN_COLORS[item.role]?.fill ?? '#94a3b8';
+              return (
+                <g key={`step-${i}`}>
+                  <circle cx={reg.cx + reg.rx - 5} cy={reg.cy - reg.ry + 5} r="6.5" fill={color} stroke="white" strokeWidth="1" />
+                  <text
+                    x={reg.cx + reg.rx - 5}
+                    y={reg.cy - reg.ry + 5}
+                    textAnchor="middle"
+                    dominantBaseline="middle"
+                    fontSize="5"
+                    fontWeight="900"
+                    fill="white"
+                  >
+                    {i + 1}
+                  </text>
+                </g>
+              );
+            })}
+          </svg>
+
+          <div className="mt-3 text-center text-[9px] leading-5 text-slate-400">Dashed = posterior region</div>
+        </div>
+
+        {/* Chain pathway */}
+        <div className="space-y-4">
+          {loading ? (
+            <div className="flex items-center gap-3 rounded-[24px] border border-slate-100 bg-white p-6">
+              <div className="h-5 w-5 animate-spin rounded-full border-2 border-sky-500 border-t-transparent" />
+              <span className="text-sm text-slate-500">Generating kinetic chain analysis…</span>
+            </div>
+          ) : (
+            <>
+              <div className="riq-card p-5">
+                <div className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-400">Pattern Overview</div>
+                <p className="mt-3 text-sm leading-7 text-slate-700">{chainData?.description}</p>
+              </div>
+
+              <div className="riq-card p-5">
+                <div className="mb-4 text-[10px] font-black uppercase tracking-[0.22em] text-slate-400">Chain Pathway</div>
+                <div className="space-y-1">
+                  {chainData?.chain.map((item, i) => {
+                    const colors = CHAIN_COLORS[item.role] ?? CHAIN_COLORS.chain_flow;
+                    const sideLabel = item.side === 'bilateral' ? 'Bilateral' : item.side === 'right' ? 'Right' : 'Left';
+                    return (
+                      <div key={`chain-${i}`}>
+                        <div className="flex items-start gap-3 py-2">
+                          <div
+                            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[11px] font-black text-white shadow-sm"
+                            style={{ backgroundColor: colors.fill }}
+                          >
+                            {i + 1}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="text-sm font-black text-slate-950">{item.name}</span>
+                              <span className={`rounded-full border px-2.5 py-0.5 text-[9px] font-black uppercase tracking-[0.16em] ${colors.bgClass} ${colors.textClass} ${colors.borderClass}`}>
+                                {colors.label}
+                              </span>
+                              <span className="text-[10px] font-medium text-slate-400">{sideLabel}</span>
+                            </div>
+                            <p className="mt-1 text-xs leading-5 text-slate-500">{item.detail}</p>
+                          </div>
+                        </div>
+                        {i < chainData.chain.length - 1 ? (
+                          <div className="ml-4 h-4 w-px translate-x-3.5 bg-slate-200" />
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ReportModal({ open, onClose, assessmentData, planData }) {
   const primaryAnalysis = useMemo(() => deriveAnalysis(assessmentData, planData, 1), [assessmentData, planData]);
   const secondaryAnalysis = useMemo(() => deriveAnalysis(assessmentData, planData, 2), [assessmentData, planData]);
@@ -836,7 +1243,7 @@ function ReportModal({ open, onClose, assessmentData, planData }) {
             <AnalysisPanel analysis={primaryAnalysis} emphasis="primary" />
             <AnalysisPanel analysis={secondaryAnalysis} emphasis="secondary" />
 
-            <ChatAssistant primaryAnalysis={primaryAnalysis} secondaryAnalysis={secondaryAnalysis} />
+            <ChatAssistant primaryAnalysis={primaryAnalysis} secondaryAnalysis={secondaryAnalysis} assessmentData={assessmentData} />
           </div>
         </div>
       </div>
@@ -1053,6 +1460,7 @@ export default function SessionPlan({
 
             {activeTab === 'analysis1' ? <AnalysisPanel analysis={primaryAnalysis} emphasis="primary" /> : null}
             {activeTab === 'analysis2' ? <AnalysisPanel analysis={secondaryAnalysis} emphasis="secondary" /> : null}
+            {activeTab === 'kinetic_chain' ? <KineticChainTab assessmentData={assessmentData} planData={planData} /> : null}
 
             {activeTab === 'exercises' ? (
               <div className="space-y-5">
