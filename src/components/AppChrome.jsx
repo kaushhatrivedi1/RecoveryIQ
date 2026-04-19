@@ -2,8 +2,9 @@ import { Activity, ChevronLeft, LayoutDashboard, Radio, Stethoscope, Users } fro
 import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom';
 
 export function BrandLockup({ subtitle = 'Adaptive Recovery Intelligence' }) {
+  const auth = localStorage.getItem('riq_auth');
   return (
-    <Link to="/dashboard" className="riq-brand no-underline">
+    <Link to={auth ? "/dashboard" : "/"} className="riq-brand no-underline">
       <span className="riq-brand-mark">
         <Activity className="text-[#1f7ae0]" size={22} />
       </span>

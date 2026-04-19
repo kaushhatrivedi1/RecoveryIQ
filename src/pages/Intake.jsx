@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   CheckCircle,
   MapPin,
@@ -29,6 +29,7 @@ import CameraAssessment from '../components/CameraAssessment';
 import VoiceIntake from '../components/VoiceIntake';
 import GuidedAssessment from '../components/GuidedAssessment';
 import SessionPlan from '../components/SessionPlan';
+import { trackEvent } from '../services/marketing';
 
 function LiveSessionCard({
   patient,
@@ -185,7 +186,7 @@ function LiveSessionCard({
   );
 }
 
-export default function Intake() {
+export default function Intake({ publicMode = false }) {
   const navigate = useNavigate();
   const [params] = useSearchParams();
   const {
@@ -254,6 +255,10 @@ export default function Intake() {
     if (!planData || !sessionPlanRef.current) return;
     sessionPlanRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }, [planData]);
+
+  useEffect(() => {
+    if (publicMode) trackEvent('demo_page_view', { source: 'public_demo' });
+  }, [publicMode]);
 
   useEffect(() => {
     // Intake/report state is session-specific and should not leak between clients.
@@ -410,25 +415,41 @@ export default function Intake() {
 
   return (
     <PageShell
-      eyebrow="Session Workflow"
-      title="Session Manager"
-      subtitle="Guided assessment, AI plan generation, and live session controls in the same RecoveryIQ interface used across the rest of the product."
+      eyebrow={publicMode ? "Interactive Demo" : "Session Workflow"}
+      title={publicMode ? "RecoveryIQ Demo Intake" : "Session Manager"}
+      subtitle={publicMode
+        ? "Walk through the same guided intake, movement capture, and recovery planning flow used inside the practitioner product."
+        : "Guided assessment, AI plan generation, and live session controls in the same RecoveryIQ interface used across the rest of the product."}
       actions={
         <>
-          <div className="riq-pill">
-            <span className="font-semibold text-slate-500">Account</span>
-            <span className="font-bold text-slate-900">Annie&apos;s Demo Account</span>
-          </div>
-          <div className="riq-pill !gap-3 !px-3 !py-2">
-            <span className="flex h-9 w-9 items-center justify-center rounded-full bg-slate-100 text-slate-600">
-              <User size={16} />
-            </span>
-            <span className="font-bold text-slate-900">{patientName}</span>
-          </div>
+          {publicMode ? (
+            <>
+              <Link to="/book-demo" className="riq-button-secondary">
+                Book Live Demo
+              </Link>
+              <Link to="/login" className="riq-button-secondary">
+                Practitioner Login
+              </Link>
+            </>
+          ) : (
+            <>
+              <div className="riq-pill">
+                <span className="font-semibold text-slate-500">Account</span>
+                <span className="font-bold text-slate-900">Annie&apos;s Demo Account</span>
+              </div>
+              <div className="riq-pill !gap-3 !px-3 !py-2">
+                <span className="flex h-9 w-9 items-center justify-center rounded-full bg-slate-100 text-slate-600">
+                  <User size={16} />
+                </span>
+                <span className="font-bold text-slate-900">{patientName}</span>
+              </div>
+            </>
+          )}
         </>
       }
     >
       <div className="space-y-6 pb-24">
+        {!publicMode ? (
         <section className="riq-panel p-5 sm:p-6">
           <div className="mb-4 flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.22em] text-slate-500">
             Session Client
@@ -543,6 +564,24 @@ export default function Intake() {
             </div>
           ) : null}
         </section>
+        ) : (
+          <section className="riq-panel p-5 sm:p-6">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <div className="mb-2 text-[11px] font-bold uppercase tracking-[0.22em] text-slate-500">
+                  Demo Flow
+                </div>
+                <p className="max-w-2xl text-sm leading-6 text-slate-600">
+                  This public demo skips practitioner account management and jumps straight into the
+                  product workflow: intake, movement capture, recovery feedback, and session planning.
+                </p>
+              </div>
+              <div className="riq-pill !border-sky-200 !bg-sky-50 !text-sky-700">
+                Guest walkthrough mode
+              </div>
+            </div>
+          </section>
+        )}
 
         <section className="flex flex-wrap gap-3">
           <button

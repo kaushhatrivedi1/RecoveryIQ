@@ -214,7 +214,7 @@ export default function Dashboard() {
               <h3 className="riq-section-title text-2xl font-semibold text-slate-950">Recovery Score Trends</h3>
               <p className="mt-1 text-sm text-slate-500">Seven-day movement across active clients</p>
             </div>
-            <span className="riq-pill text-slate-500">Live mock data</span>
+            <span className="riq-pill text-slate-500">Live trend view</span>
           </div>
 
           <ResponsiveContainer width="100%" height={260}>

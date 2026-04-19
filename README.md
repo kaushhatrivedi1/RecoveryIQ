@@ -77,6 +77,19 @@ export CLAUDE_KEY=sk-ant-...
 bash start.sh
 ```
 
+Optional SMTP notifications for demo requests:
+
+```bash
+export SMTP_HOST=smtp.gmail.com
+export SMTP_PORT=587
+export SMTP_USER=your-email@example.com
+export SMTP_PASS=your-app-password
+export SMTP_FROM=your-email@example.com
+export LEAD_NOTIFY_TO=founder@example.com
+```
+
+When these are configured, every `/api/leads` submission is stored in SQLite and also sends an email notification.
+
 All keys are optional — the app falls back gracefully to keyword extraction, browser TTS, and demo values.
 
 ---
@@ -92,6 +105,11 @@ All keys are optional — the app falls back gracefully to keyword extraction, b
 | POST | `/api/analyze-movement` | Frame buffer → ROM ranges, quality score, movement flags |
 | POST | `/api/analyze-video` | Frame buffer → rPPG HR/HRV + breath rate + pose |
 | POST | `/api/full-assessment` | All signals → structured bundle + Claude recovery report |
+| POST | `/api/clients` | Create a client record |
+| POST | `/api/clients/{client_id}/scores` | Persist a recovery score check-in |
+| POST | `/api/clients/{client_id}/sessions` | Persist a recorded session |
+| POST | `/api/leads` | Store a demo/marketing lead and optionally send email notification |
+| POST | `/api/events` | Store marketing funnel events |
 
 ---
 

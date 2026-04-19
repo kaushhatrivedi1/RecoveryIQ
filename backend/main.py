@@ -14,11 +14,13 @@ import json
 import os
 import re
 import sqlite3
+import smtplib
 import subprocess
 import tempfile
 import time
 from collections import deque
 from datetime import datetime, timedelta
+from email.message import EmailMessage
 from typing import List, Optional
 
 import anthropic
@@ -47,6 +49,12 @@ rom_reference = ROMReference()
 
 CLAUDE_KEY = os.getenv("CLAUDE_KEY", "")
 DB_PATH = os.path.join(os.path.dirname(__file__), "recoveryiq.db")
+SMTP_HOST = os.getenv("SMTP_HOST", "")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USER = os.getenv("SMTP_USER", "")
+SMTP_PASS = os.getenv("SMTP_PASS", "")
+SMTP_FROM = os.getenv("SMTP_FROM", SMTP_USER)
+LEAD_NOTIFY_TO = os.getenv("LEAD_NOTIFY_TO", "")
 
 WELLNESS_SYSTEM = """You are a wellness recovery assistant for Hydrawav3.
 Use only wellness language: supports, recovery, mobility, restoration, balance.
@@ -113,6 +121,23 @@ class ClientSessionRequest(BaseModel):
     before_score: Optional[int] = 0
     after_score: Optional[int] = 0
     date: Optional[str] = None
+
+
+class LeadCreateRequest(BaseModel):
+    name: str
+    email: str
+    clinic: Optional[str] = ""
+    role: Optional[str] = ""
+    source: Optional[str] = ""
+    interest: Optional[str] = ""
+    notes: Optional[str] = ""
+
+
+class EventTrackRequest(BaseModel):
+    event: str
+    path: Optional[str] = ""
+    source: Optional[str] = ""
+    meta: Optional[dict] = {}
 
 
 def get_db():
@@ -255,6 +280,31 @@ def init_client_store():
             avatar TEXT,
             sessions TEXT NOT NULL,
             recovery_scores TEXT NOT NULL
+        )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS leads (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            email TEXT NOT NULL,
+            clinic TEXT,
+            role TEXT,
+            source TEXT,
+            interest TEXT,
+            notes TEXT,
+            created_at TEXT NOT NULL
+        )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS marketing_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event TEXT NOT NULL,
+            path TEXT,
+            source TEXT,
+            meta TEXT,
+            created_at TEXT NOT NULL
         )
     """)
 
@@ -408,6 +458,49 @@ def synthesize_mac_speech(text: str) -> str:
         raise HTTPException(status_code=500, detail=exc.stderr.strip() or "Speech synthesis failed") from exc
 
     return wav_path
+
+
+def send_lead_notification_email(lead: dict) -> dict:
+    """
+    Sends a lead notification email when SMTP is configured.
+    The lead is always stored first; email notification is best-effort.
+    """
+    if not (SMTP_HOST and SMTP_FROM and LEAD_NOTIFY_TO):
+        return {"sent": False, "reason": "smtp_not_configured"}
+
+    try:
+        message = EmailMessage()
+        message["Subject"] = f"New RecoveryIQ demo request: {lead['name']}"
+        message["From"] = SMTP_FROM
+        message["To"] = LEAD_NOTIFY_TO
+        message.set_content(
+            "\n".join(
+                [
+                    "New RecoveryIQ lead received.",
+                    "",
+                    f"Name: {lead.get('name', '')}",
+                    f"Email: {lead.get('email', '')}",
+                    f"Clinic: {lead.get('clinic', '')}",
+                    f"Role: {lead.get('role', '')}",
+                    f"Source: {lead.get('source', '')}",
+                    f"Interest: {lead.get('interest', '')}",
+                    f"Submitted: {lead.get('created_at', '')}",
+                    "",
+                    "Notes:",
+                    lead.get("notes", "") or "(none)",
+                ]
+            )
+        )
+
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=10) as server:
+            server.starttls()
+            if SMTP_USER and SMTP_PASS:
+                server.login(SMTP_USER, SMTP_PASS)
+            server.send_message(message)
+
+        return {"sent": True}
+    except Exception as exc:
+        return {"sent": False, "reason": str(exc)}
 
 
 # ── rPPG — Heart Rate / HRV from face color ──────────────────────────────────
@@ -895,6 +988,59 @@ def create_client_session(client_id: str, req: ClientSessionRequest):
     client = serialize_client_row(updated_row)
     conn.close()
     return {"client": client}
+
+
+@app.post("/api/leads")
+def create_lead(req: LeadCreateRequest):
+    conn = get_db()
+    cur = conn.cursor()
+    created_at = datetime.now().isoformat(timespec="seconds")
+    cur.execute(
+        """
+        INSERT INTO leads (name, email, clinic, role, source, interest, notes, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            req.name.strip(),
+            req.email.strip().lower(),
+            req.clinic.strip(),
+            req.role.strip(),
+            req.source.strip(),
+            req.interest.strip(),
+            req.notes.strip(),
+            created_at,
+        ),
+    )
+    lead_id = cur.lastrowid
+    conn.commit()
+    row = cur.execute("SELECT * FROM leads WHERE id = ?", (lead_id,)).fetchone()
+    conn.close()
+    lead = dict(row)
+    notification = send_lead_notification_email(lead)
+    return {"lead": lead, "notification": notification}
+
+
+@app.post("/api/events")
+def track_event(req: EventTrackRequest):
+    conn = get_db()
+    cur = conn.cursor()
+    created_at = datetime.now().isoformat(timespec="seconds")
+    cur.execute(
+        """
+        INSERT INTO marketing_events (event, path, source, meta, created_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            req.event.strip(),
+            (req.path or "").strip(),
+            (req.source or "").strip(),
+            json.dumps(req.meta or {}),
+            created_at,
+        ),
+    )
+    conn.commit()
+    conn.close()
+    return {"ok": True}
 
 
 @app.post("/api/tts")
