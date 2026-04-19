@@ -292,6 +292,9 @@ def analyze_single_pose_frame(frame):
     r_hip = angle_3pts(lm[12], lm[24], lm[26])
     l_knee = angle_3pts(lm[23], lm[25], lm[27])
     r_knee = angle_3pts(lm[24], lm[26], lm[28])
+    # Wrist flexion: elbow → wrist → index MCP (landmark 19/20)
+    l_wrist = angle_3pts(lm[13], lm[15], lm[19])
+    r_wrist = angle_3pts(lm[14], lm[16], lm[20])
 
     shoulder_diff = abs(lm[11].y - lm[12].y)
     hip_diff = abs(lm[23].y - lm[24].y)
@@ -305,6 +308,8 @@ def analyze_single_pose_frame(frame):
         flags.append(f"{side} hip elevation detected")
     if abs(l_knee - r_knee) > 15:
         flags.append("Knee angle asymmetry — possible compensation pattern")
+    if abs(l_wrist - r_wrist) > 20:
+        flags.append("Wrist angle asymmetry — possible grip or wrist restriction")
 
     landmarks_out = [
         {"x": l.x, "y": l.y, "z": l.z, "visibility": l.visibility}
@@ -321,6 +326,8 @@ def analyze_single_pose_frame(frame):
             "right_hip":      round(r_hip, 1),
             "left_knee":      round(l_knee, 1),
             "right_knee":     round(r_knee, 1),
+            "left_wrist":     round(l_wrist, 1),
+            "right_wrist":    round(r_wrist, 1),
         },
         "asymmetry_flags": flags,
         "shoulder_diff_pct": round(shoulder_diff * 100, 1),

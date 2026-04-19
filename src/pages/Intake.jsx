@@ -75,22 +75,37 @@ export default function Intake() {
   const [contraAcknowledged, setContraAcknowledged] = useState(false);
   const [showCamera, setShowCamera] = useState(false);
   const [showVoice, setShowVoice] = useState(false);
+  const [scanData, setScanData] = useState(null);
+  const [voiceFilled, setVoiceFilled] = useState(false);
 
   const hasContraindication = selectedZones.some((zone) => CONTRAINDICATION_ZONES.includes(zone));
 
   function handleCameraAssessment(data) {
+    setScanData(data);
     const v = data?.vitals;
     if (v?.hrv_sdnn_ms && v.hrv_sdnn_ms > 0) setHrv(String(v.hrv_sdnn_ms));
     setShowCamera(false);
   }
 
   function handleVoiceIntakeComplete(data) {
-    if (data?.zones?.length) setSelectedZones(data.zones);
-    if (data?.discomfort) {
-      const zone = data.zones?.[0];
-      if (zone) setZoneDetails(prev => ({ ...prev, [zone]: { discomfort: data.discomfort, behavior: data.behavior || BEHAVIORS[1], duration: data.duration || DURATIONS[2] } }));
+    if (data?.zones?.length) {
+      setSelectedZones(data.zones);
+      // Fill zone details for every detected zone
+      setZoneDetails(prev => {
+        const next = { ...prev };
+        data.zones.forEach(zone => {
+          next[zone] = {
+            discomfort: data.discomfort ?? 5,
+            behavior: data.behavior || BEHAVIORS[1],
+            duration: data.duration || DURATIONS[2],
+          };
+        });
+        return next;
+      });
     }
     if (data?.notes) setNotes(data.notes);
+    if (data?.patient_name) setPatientName(data.patient_name);
+    setVoiceFilled(true);
     setShowVoice(false);
   }
 
@@ -128,6 +143,9 @@ export default function Intake() {
       duration: detail.duration || DURATIONS[2],
       hrv: hrv || null,
       notes,
+      hr: scanData?.vitals?.hr_bpm || null,
+      breathRate: scanData?.vitals?.breath_rate_bpm || null,
+      asymmetryFlags: scanData?.pose?.asymmetry_flags || [],
     });
 
     setBrief(text);
@@ -328,6 +346,44 @@ export default function Intake() {
                 onAssessmentComplete={handleCameraAssessment}
                 onClose={() => setShowCamera(false)}
               />
+            )}
+
+            {/* Biometric scan results (persisted after camera closes) */}
+            {scanData?.vitals && !showCamera && (
+              <div className="rounded-[1.75rem] border border-sky-200 bg-sky-50/80 px-4 py-4">
+                <div className="mb-2 flex items-center gap-2 text-xs font-semibold text-sky-700">
+                  <div className="h-2 w-2 rounded-full bg-sky-500" />
+                  Biometric scan results
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  {[
+                    { label: 'Heart Rate', value: `${scanData.vitals.hr_bpm} BPM` },
+                    { label: 'HRV (SDNN)', value: `${scanData.vitals.hrv_sdnn_ms} ms` },
+                    { label: 'Breath Rate', value: `${scanData.vitals.breath_rate_bpm}/min` },
+                  ].map(item => (
+                    <div key={item.label} className="rounded-xl bg-white px-3 py-2 text-center">
+                      <div className="text-sm font-bold text-slate-900">{item.value}</div>
+                      <div className="text-[10px] text-slate-400">{item.label}</div>
+                    </div>
+                  ))}
+                </div>
+                {scanData.pose?.asymmetry_flags?.length > 0 && (
+                  <div className="mt-2 text-xs text-amber-700">
+                    ⚠ {scanData.pose.asymmetry_flags.join(' · ')}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Voice intake confirmation banner */}
+            {voiceFilled && (
+              <div className="flex items-start gap-2 rounded-[1.5rem] border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+                <CheckCircle size={15} className="mt-0.5 shrink-0" />
+                <span>
+                  Voice intake filled {selectedZones.length} zone{selectedZones.length !== 1 ? 's' : ''} — discomfort, behavior, duration, and notes pre-populated below.
+                  <button onClick={() => setVoiceFilled(false)} className="ml-2 underline opacity-60 hover:opacity-100">dismiss</button>
+                </span>
+              </div>
             )}
 
             <article className="riq-card px-5 py-5 sm:px-6">

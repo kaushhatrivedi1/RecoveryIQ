@@ -134,15 +134,29 @@ export default function VoiceIntake({ patientName, elevenKey, onIntakeComplete, 
 
   const currentQ = QUESTIONS[step];
 
-  // Speak current question when step changes
+  // Speak current question only when step changes — NOT on every prop change.
+  // elevenKey/patientName intentionally excluded: capturing them at effect time via ref.
+  const elevenKeyRef = useRef(elevenKey);
+  const patientNameRef = useRef(patientName);
+  useEffect(() => { elevenKeyRef.current = elevenKey; }, [elevenKey]);
+  useEffect(() => { patientNameRef.current = patientName; }, [patientName]);
+
   useEffect(() => {
     if (done) return;
+    let cancelled = false;
     const text = step === 0
-      ? `Hello ${patientName || 'there'}! ${currentQ.text}`
-      : currentQ.text;
-    queueMicrotask(() => setSpeaking(true));
-    speakQuestion(text, elevenKey).then(() => setSpeaking(false));
-  }, [currentQ.text, done, elevenKey, patientName, step]);
+      ? `Hello ${patientNameRef.current || 'there'}! ${QUESTIONS[step].text}`
+      : QUESTIONS[step].text;
+    setSpeaking(true);
+    speakQuestion(text, elevenKeyRef.current).then(() => {
+      if (!cancelled) setSpeaking(false);
+    });
+    return () => {
+      cancelled = true;
+      window.speechSynthesis?.cancel();
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, done]);
 
   async function handleSubmitAnswer() {
     const answer = currentTranscript.trim();
