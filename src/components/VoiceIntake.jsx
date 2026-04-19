@@ -148,20 +148,20 @@ export default function VoiceIntake({ patientName, elevenKey, onIntakeComplete, 
   // elevenKey/patientName intentionally excluded: capturing them at effect time via ref.
   const elevenKeyRef = useRef(elevenKey);
   const patientNameRef = useRef(patientName);
+  const spokenStepRef = useRef(-1); // prevents StrictMode double-fire
   useEffect(() => { elevenKeyRef.current = elevenKey; }, [elevenKey]);
   useEffect(() => { patientNameRef.current = patientName; }, [patientName]);
 
   useEffect(() => {
     if (done) return;
-    let cancelled = false;
+    if (spokenStepRef.current === step) return; // already speaking this step
+    spokenStepRef.current = step;
+
     const text = step === 0
       ? `Hello ${patientNameRef.current || 'there'}! ${QUESTIONS[step].text}`
       : QUESTIONS[step].text;
     setSpeaking(true);
-    speakQuestion(text, elevenKeyRef.current).then(() => {
-      if (!cancelled) setSpeaking(false);
-    });
-    return () => { cancelled = true; };
+    speakQuestion(text, elevenKeyRef.current).then(() => setSpeaking(false));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step, done]);
 
