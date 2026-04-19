@@ -8,7 +8,6 @@ import {
   RotateCcw,
   Sparkles,
   Square,
-  Volume2,
 } from 'lucide-react';
 import { PageShell } from '../components/AppChrome';
 import { useApp } from '../context/AppContext';
@@ -18,9 +17,10 @@ import {
   generateClientBrief,
   mqttAuth,
   mqttCommand,
-  speakText,
 } from '../services/api';
 import Body3D from '../components/Body3D';
+import CameraAssessment from '../components/CameraAssessment';
+import { VoicePanel } from '../components/VoiceAndASL';
 
 const BEHAVIORS = ['Always Present', 'Comes and Goes', 'Only with Certain Activities', 'Varies Day to Day'];
 const DURATIONS = ['Less than 6 weeks', '6 weeks to 3 months', '3 to 6 months', '6 months to 1 year', 'More than 1 year'];
@@ -69,8 +69,10 @@ export default function Intake() {
   const [mqttBase, setMqttBase] = useState('https://api.hydrawav3.studio');
   const [sessionState, setSessionState] = useState('idle');
   const [elevenKey, setElevenKey] = useState('');
-  const [speakingBrief, setSpeakingBrief] = useState(false);
   const [contraAcknowledged, setContraAcknowledged] = useState(false);
+
+  // ── Camera assessment state ──
+  const [assessmentData, setAssessmentData] = useState(null);
 
   const hasContraindication = selectedZones.some((zone) => CONTRAINDICATION_ZONES.includes(zone));
 
@@ -78,7 +80,6 @@ export default function Intake() {
     setSelectedZones((previous) =>
       previous.includes(zoneId) ? previous.filter((zone) => zone !== zoneId) : [...previous, zoneId]
     );
-
     if (!zoneDetails[zoneId]) {
       setZoneDetails((previous) => ({
         ...previous,
@@ -108,20 +109,13 @@ export default function Intake() {
       duration: detail.duration || DURATIONS[2],
       hrv: hrv || null,
       notes,
+      rom: assessmentData?.rom || null,
+      flags: assessmentData?.flags || [],
     });
 
     setBrief(text);
     setLoadingBrief(false);
     setStep('brief');
-  }
-
-  async function handleReadBrief() {
-    setSpeakingBrief(true);
-    const fullText = `${brief} Primary area: ${selectedZones
-      .map((zone) => zone.replace(/_/g, ' '))
-      .join(' and ')}. HRV signal: ${hrv ? `${hrv} milliseconds` : 'not provided'}.`;
-    await speakText(fullText, elevenKey);
-    setSpeakingBrief(false);
   }
 
   async function handleStartSession() {
@@ -185,8 +179,10 @@ export default function Intake() {
       actions={<StepDots step={step} />}
       contentWidth="max-w-6xl"
     >
+      {/* ── STEP: FORM ── */}
       {step === 'form' ? (
         <section className="grid gap-6 xl:grid-cols-[1.05fr_0.95fr]">
+          {/* Left column — body map */}
           <article className="riq-panel riq-mesh px-6 py-6 sm:px-8">
             <div className="mb-5 flex items-start justify-between gap-4">
               <div>
@@ -274,7 +270,37 @@ export default function Intake() {
             ) : null}
           </article>
 
+          {/* Right column */}
           <div className="space-y-6">
+
+            {/* ── CAMERA ASSESSMENT ── */}
+            <article className="riq-card px-5 py-5 sm:px-6">
+              <div className="riq-eyebrow mb-4">Camera Assessment</div>
+              <CameraAssessment
+                patientName={patientName || 'Patient'}
+                onAssessmentComplete={(data) => {
+                  setAssessmentData(data);
+                  // Auto-fill HRV if camera extracted it
+                  if (data.hrv) setHrv(String(data.hrv));
+                }}
+              />
+              {/* Show assessment flags inline if complete */}
+              {assessmentData?.flags?.length > 0 && (
+                <div className="mt-3 space-y-2">
+                  {assessmentData.flags.map((flag, i) => (
+                    <div
+                      key={i}
+                      className="flex items-start gap-2 rounded-[1.25rem] border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700"
+                    >
+                      <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                      {flag}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </article>
+
+            {/* Patient context */}
             <article className="riq-card px-5 py-5 sm:px-6">
               <div className="riq-eyebrow mb-4">Patient context</div>
               <div className="space-y-4">
@@ -290,7 +316,10 @@ export default function Intake() {
 
                 <div>
                   <label className="mb-2 block text-sm font-medium text-slate-600">
-                    HRV (ms) <span className="text-slate-400">optional</span>
+                    HRV (ms){' '}
+                    <span className="text-slate-400">
+                      {assessmentData?.hrv ? '— auto-filled from camera scan' : 'optional'}
+                    </span>
                   </label>
                   <input
                     type="number"
@@ -327,6 +356,7 @@ export default function Intake() {
               </div>
             </article>
 
+            {/* ElevenLabs key */}
             <article className="riq-card px-5 py-5 sm:px-6">
               <label className="mb-2 block text-sm font-medium text-slate-600">
                 ElevenLabs API key <span className="text-slate-400">optional</span>
@@ -340,6 +370,7 @@ export default function Intake() {
               />
             </article>
 
+            {/* Contraindication warning */}
             {hasContraindication ? (
               <article className="rounded-[1.75rem] border border-rose-200 bg-rose-50/90 px-5 py-5">
                 <div className="flex items-start gap-3">
@@ -363,6 +394,7 @@ export default function Intake() {
               </article>
             ) : null}
 
+            {/* Generate brief CTA */}
             <article className="riq-panel px-5 py-5 sm:px-6">
               <div className="mb-4">
                 <div className="riq-eyebrow mb-3">Step 2 preview</div>
@@ -370,14 +402,20 @@ export default function Intake() {
                   Generate the client brief
                 </h3>
                 <p className="mt-2 text-sm leading-6 text-slate-500">
-                  The brief combines area, severity, symptom pattern, HRV, and notes into a polished summary.
+                  The brief combines area, severity, symptom pattern, HRV
+                  {assessmentData ? ', camera ROM data,' : ''} and notes into a polished summary.
                 </p>
               </div>
 
               <button
                 type="button"
                 onClick={handleGenerateBrief}
-                disabled={!patientName || selectedZones.length === 0 || loadingBrief || (hasContraindication && !contraAcknowledged)}
+                disabled={
+                  !patientName ||
+                  selectedZones.length === 0 ||
+                  loadingBrief ||
+                  (hasContraindication && !contraAcknowledged)
+                }
                 className="riq-button w-full"
               >
                 {loadingBrief ? 'Generating client brief...' : 'Generate client brief'}
@@ -393,6 +431,7 @@ export default function Intake() {
         </section>
       ) : null}
 
+      {/* ── STEP: BRIEF ── */}
       {step === 'brief' ? (
         <section className="mx-auto max-w-4xl">
           <article className="riq-panel riq-mesh px-6 py-7 sm:px-8">
@@ -407,6 +446,7 @@ export default function Intake() {
               <span className="riq-pill text-slate-500">{new Date().toLocaleTimeString()}</span>
             </div>
 
+            {/* Intake summary grid */}
             <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
               {[
                 { label: 'Patient', value: patientName },
@@ -423,19 +463,49 @@ export default function Intake() {
               ))}
             </div>
 
+            {/* Camera ROM summary — only if assessment was done */}
+            {assessmentData?.rom && (
+              <div className="mt-4 rounded-[1.75rem] border border-sky-100 bg-white/80 px-5 py-4">
+                <div className="mb-3 text-xs uppercase tracking-[0.18em] text-slate-400">Camera Assessment</div>
+                <div className="grid grid-cols-3 gap-3 sm:grid-cols-6">
+                  {[
+                    { label: 'L Shoulder', val: assessmentData.rom.leftShoulder },
+                    { label: 'R Shoulder', val: assessmentData.rom.rightShoulder },
+                    { label: 'L Hip', val: assessmentData.rom.leftHip },
+                    { label: 'R Hip', val: assessmentData.rom.rightHip },
+                    { label: 'L Knee', val: assessmentData.rom.leftKnee },
+                    { label: 'R Knee', val: assessmentData.rom.rightKnee },
+                  ].map((m) => (
+                    <div key={m.label} className="text-center">
+                      <div className="text-lg font-bold font-mono text-slate-800">{m.val ?? '—'}°</div>
+                      <div className="text-xs text-slate-400">{m.label}</div>
+                    </div>
+                  ))}
+                </div>
+                {assessmentData.rom.asymmetryFlag && (
+                  <div className="mt-3 flex items-center gap-2 text-sm text-amber-600">
+                    <AlertTriangle size={13} />
+                    Asymmetry detected — {assessmentData.rom.asymmetryScore} point difference between sides
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* AI brief text */}
             <div className="mt-6 rounded-[1.75rem] border border-cyan-100 bg-white/85 px-5 py-5 shadow-[0_16px_30px_rgba(15,23,42,0.06)]">
               <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-cyan-700">
                 <div className="h-2 w-2 rounded-full bg-cyan-500" />
-                AI-generated summary
+                AI-generated wellness summary
               </div>
               <p className="text-sm leading-7 text-slate-600">{brief}</p>
             </div>
 
-            <button type="button" onClick={handleReadBrief} disabled={speakingBrief} className="riq-button-secondary mt-5">
-              <Volume2 size={16} className={speakingBrief ? 'animate-pulse text-sky-600' : ''} />
-              {speakingBrief ? 'Reading aloud...' : 'Read brief aloud'}
-            </button>
+            {/* ── VOICE PANEL (ElevenLabs + ASL) ── */}
+            <div className="mt-5">
+              <VoicePanel text={brief} label="Read Brief" />
+            </div>
 
+            {/* Protocol + MQTT config */}
             <div className="mt-8 grid gap-6 xl:grid-cols-[1fr_0.95fr]">
               <div className="riq-card px-5 py-5">
                 <div className="mb-4">
@@ -450,7 +520,9 @@ export default function Intake() {
                     <label className="mb-2 block text-sm font-medium text-slate-600">Treatment protocol</label>
                     <select
                       value={selectedProtocol.id}
-                      onChange={(e) => setSelectedProtocol(PROTOCOLS.find((protocol) => protocol.id === e.target.value))}
+                      onChange={(e) =>
+                        setSelectedProtocol(PROTOCOLS.find((protocol) => protocol.id === e.target.value))
+                      }
                       className="riq-select"
                     >
                       {PROTOCOLS.map((protocol) => (
@@ -459,6 +531,10 @@ export default function Intake() {
                         </option>
                       ))}
                     </select>
+                    {/* Protocol description to avoid confusion */}
+                    {selectedProtocol?.description && (
+                      <p className="mt-2 text-xs text-slate-400">{selectedProtocol.description}</p>
+                    )}
                   </div>
 
                   <div>
@@ -484,11 +560,21 @@ export default function Intake() {
                 <div className="space-y-4">
                   <div>
                     <label className="mb-2 block text-sm font-medium text-slate-600">API base URL</label>
-                    <input value={mqttBase} onChange={(e) => setMqttBase(e.target.value)} className="riq-input" placeholder="https://..." />
+                    <input
+                      value={mqttBase}
+                      onChange={(e) => setMqttBase(e.target.value)}
+                      className="riq-input"
+                      placeholder="https://..."
+                    />
                   </div>
                   <div>
                     <label className="mb-2 block text-sm font-medium text-slate-600">Username</label>
-                    <input value={mqttUser} onChange={(e) => setMqttUser(e.target.value)} className="riq-input" placeholder="username" />
+                    <input
+                      value={mqttUser}
+                      onChange={(e) => setMqttUser(e.target.value)}
+                      className="riq-input"
+                      placeholder="username"
+                    />
                   </div>
                   <div>
                     <label className="mb-2 block text-sm font-medium text-slate-600">Password</label>
@@ -518,6 +604,7 @@ export default function Intake() {
         </section>
       ) : null}
 
+      {/* ── STEP: SESSION ── */}
       {step === 'session' ? (
         <section className="mx-auto max-w-3xl">
           <article className="riq-panel riq-mesh px-6 py-8 text-center sm:px-8">
