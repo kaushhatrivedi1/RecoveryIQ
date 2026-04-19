@@ -107,13 +107,29 @@ async function speakQuestion(text, elevenKey) {
     } catch { /* fall through */ }
   }
 
-  // Browser TTS fallback
+    // Browser TTS fallback
   return new Promise(resolve => {
-    const utter = new SpeechSynthesisUtterance(text);
-    utter.rate = 0.95;
-    utter.pitch = 1.0;
-    utter.onend = resolve;
-    window.speechSynthesis.speak(utter);
+    const doSpeak = () => {
+      const utter = new SpeechSynthesisUtterance(text);
+      utter.rate = 0.95;
+      utter.pitch = 1.0;
+      utter.onend = resolve;
+      utter.onerror = resolve; // never hang if TTS errors
+      window.speechSynthesis.cancel(); // clear any stuck queue first
+      window.speechSynthesis.speak(utter);
+    };
+
+    // Chrome: voices may not be ready on first render
+    const voices = window.speechSynthesis.getVoices();
+    if (voices.length > 0) {
+      doSpeak();
+    } else {
+      window.speechSynthesis.onvoiceschanged = () => {
+        window.speechSynthesis.onvoiceschanged = null;
+        doSpeak();
+      };
+      setTimeout(resolve, 3000); // give up after 3s if voices never load
+    }
   });
 }
 
@@ -220,7 +236,7 @@ export default function VoiceIntake({ patientName, elevenKey, onIntakeComplete, 
         <div className="flex items-center gap-2">
           <span className="text-xs text-slate-400">{step + 1} / {QUESTIONS.length}</span>
           <button onClick={onClose} className="rounded-full border border-slate-200 px-3 py-1.5 text-xs text-slate-500 transition-colors hover:border-slate-300 hover:text-slate-900">
-            Switch to Form
+            Close
           </button>
         </div>
       </div>
