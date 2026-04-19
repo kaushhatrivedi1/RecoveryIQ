@@ -78,26 +78,15 @@ function useSpeechRecognition() {
 }
 
 async function speakQuestion(text, elevenKey) {
-  // Try ElevenLabs first
   if (elevenKey) {
     try {
-      const VOICE_ID = '21m00Tcm4TlvDq8ikWAM';
-      const res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}`, {
+      const res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/21m00Tcm4TlvDq8ikWAM`, {
         method: 'POST',
-        headers: {
-          'xi-api-key': elevenKey,
-          'Content-Type': 'application/json',
-          Accept: 'audio/mpeg',
-        },
-        body: JSON.stringify({
-          text,
-          model_id: 'eleven_monolingual_v1',
-          voice_settings: { stability: 0.5, similarity_boost: 0.75 },
-        }),
+        headers: { 'xi-api-key': elevenKey, 'Content-Type': 'application/json', Accept: 'audio/mpeg' },
+        body: JSON.stringify({ text, model_id: 'eleven_monolingual_v1', voice_settings: { stability: 0.5, similarity_boost: 0.75 } }),
       });
       if (res.ok) {
-        const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
+        const url = URL.createObjectURL(await res.blob());
         return new Promise(resolve => {
           const audio = new Audio(url);
           audio.onended = resolve;
@@ -105,19 +94,10 @@ async function speakQuestion(text, elevenKey) {
           audio.play().catch(resolve);
         });
       }
-    } catch { /* fall through to browser TTS */ }
+    } catch { /* fall through */ }
   }
 
-  // Browser TTS — poll until voices are loaded (Chrome loads them async)
-  let waited = 0;
-  while (window.speechSynthesis.getVoices().length === 0 && waited < 3000) {
-    await new Promise(r => setTimeout(r, 150));
-    waited += 150;
-  }
-
-  window.speechSynthesis.cancel();
-  await new Promise(r => setTimeout(r, 80)); // let cancel settle before speak
-
+  // Browser TTS — just speak, no cancel, no delays
   return new Promise(resolve => {
     const utter = new SpeechSynthesisUtterance(text);
     utter.rate = 0.9;
