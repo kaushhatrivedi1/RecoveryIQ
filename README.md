@@ -51,7 +51,7 @@ Create a `.env` file in the project root:
 ```env
 VITE_CLAUDE_KEY=sk-ant-...       # Anthropic API key — powers AI briefs and assessment reports
 VITE_ELEVEN_KEY=sk_...           # ElevenLabs API key — powers TTS voice questions (optional, falls back to browser TTS)
-VITE_MQTT_BASE=https://api.hydrawav3.studio   # Hydrawav3 MQTT base URL
+VITE_MQTT_BASE=http://54.241.236.53:8080   # Hydrawav3 MQTT base URL
 ```
 
 The backend also reads `CLAUDE_KEY` (no `VITE_` prefix) from environment:

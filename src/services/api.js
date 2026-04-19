@@ -1,6 +1,6 @@
 const CLAUDE_KEY = import.meta.env.VITE_CLAUDE_KEY || '';
-const ELEVEN_KEY = import.meta.env.VITE_ELEVEN_KEY || '';
-const MQTT_BASE = import.meta.env.VITE_MQTT_BASE || 'https://api.hydrawav3.studio';
+const MQTT_BASE = import.meta.env.VITE_MQTT_BASE || 'http://54.241.236.53:8080';
+let lastVoiceDebug = { status: 'idle', mode: null, detail: '' };
 
 const SYSTEM_PROMPT = `You are a wellness assistant for Hydrawav3 practitioners. You support practitioners — you never replace them.
 Output only wellness language. Use: supports, empowers, mobility, recovery, wellness indicator, movement insight.
@@ -10,7 +10,7 @@ The practitioner is the expert. You are their assistant.`;
 
 export async function generateClientBrief(intakeData) {
   const { name, zones, discomfort, behavior, duration, hrv, notes } = intakeData;
-  const zoneNames = zones.map(z => z.replace(/_/g, ' ')).join(', ');
+  const zoneNames = zones.map(z => z.replaceAll('_', ' ')).join(', ');
   const prompt = `Patient: ${name}. Focus areas: ${zoneNames}. Discomfort level: ${discomfort}/10. Pattern: ${behavior}. Duration: ${duration}. HRV: ${hrv || 'not provided'}. Notes: ${notes || 'none'}. Write a 1-2 sentence wellness summary for the practitioner.`;
 
   if (!CLAUDE_KEY) {
@@ -74,33 +74,233 @@ export async function generateDashboardInsight(patient) {
   }
 }
 
-export async function speakText(text, apiKey) {
-  const key = apiKey || ELEVEN_KEY;
-  if (!key) {
-    console.warn('No ElevenLabs key — voice disabled');
-    return;
+function getPreferredBrowserVoice() {
+  if (typeof globalThis.window === 'undefined' || !('speechSynthesis' in globalThis)) return null;
+  const voices = globalThis.speechSynthesis.getVoices();
+  return (
+    voices.find((voice) => voice.name === 'Samantha') ||
+    voices.find((voice) => voice.lang?.startsWith('en-US')) ||
+    voices.find((voice) => voice.lang?.startsWith('en')) ||
+    voices[0] ||
+    null
+  );
+}
+
+export function getLastVoiceDebug() {
+  return lastVoiceDebug;
+}
+
+export function speakWithBrowserTTS(text) {
+  if (typeof globalThis.window === 'undefined' || !('speechSynthesis' in globalThis)) {
+    console.warn('Browser speech synthesis is not available');
+    lastVoiceDebug = { status: 'failed', mode: 'browser', detail: 'speechSynthesis unavailable' };
+    return Promise.resolve(false);
   }
-  const VOICE_ID = '21m00Tcm4TlvDq8ikWAM'; // Rachel
+
+  return new Promise((resolve) => {
+    const synth = globalThis.speechSynthesis;
+    const utterance = new SpeechSynthesisUtterance(text);
+    const selectedVoice = getPreferredBrowserVoice();
+
+    if (selectedVoice) {
+      utterance.voice = selectedVoice;
+      utterance.lang = selectedVoice.lang;
+    } else {
+      utterance.lang = 'en-US';
+    }
+    lastVoiceDebug = {
+      status: 'starting',
+      mode: 'browser',
+      detail: selectedVoice ? `voice=${selectedVoice.name}` : 'voice=default',
+    };
+
+    utterance.volume = 1;
+    utterance.rate = 0.95;
+    utterance.pitch = 1;
+
+    let finished = false;
+    const complete = (ok) => {
+      if (finished) return;
+      finished = true;
+      resolve(ok);
+    };
+
+    utterance.onstart = () => {
+      globalThis.clearTimeout(startTimeout);
+      lastVoiceDebug = {
+        status: 'speaking',
+        mode: 'browser',
+        detail: selectedVoice ? `voice=${selectedVoice.name}` : 'voice=default',
+      };
+    };
+    utterance.onend = () => {
+      lastVoiceDebug = {
+        status: 'finished',
+        mode: 'browser',
+        detail: selectedVoice ? `voice=${selectedVoice.name}` : 'voice=default',
+      };
+      complete(true);
+    };
+    utterance.onerror = (event) => {
+      if (event.error === 'canceled' && synth.speaking) {
+        return;
+      }
+      console.warn('Browser speech synthesis error', event.error);
+      lastVoiceDebug = {
+        status: 'failed',
+        mode: 'browser',
+        detail: `error=${event.error}`,
+      };
+      complete(false);
+    };
+
+    synth.cancel();
+    synth.resume();
+    synth.speak(utterance);
+    globalThis.setTimeout(() => synth.resume(), 150);
+    globalThis.setTimeout(() => synth.resume(), 500);
+
+    const startTimeout = globalThis.setTimeout(() => {
+      if (!synth.speaking && !finished) {
+        console.warn('Browser speech synthesis did not start');
+        lastVoiceDebug = {
+          status: 'failed',
+          mode: 'browser',
+          detail: 'speech did not start',
+        };
+        complete(false);
+      }
+    }, 1200);
+  });
+}
+
+export async function speakText(text) {
   try {
-    const res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}`, {
+    lastVoiceDebug = { status: 'starting', mode: 'vite-tts', detail: 'requesting /api/tts' };
+    const controller = new AbortController();
+    const requestTimeout = globalThis.setTimeout(() => controller.abort(), 5000);
+    const response = await fetch('/api/tts', {
       method: 'POST',
-      headers: {
-        'xi-api-key': key,
-        'Content-Type': 'application/json',
-        Accept: 'audio/mpeg',
-      },
-      body: JSON.stringify({
-        text,
-        model_id: 'eleven_monolingual_v1',
-        voice_settings: { stability: 0.5, similarity_boost: 0.75 },
-      }),
+      headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
+      body: JSON.stringify({ text }),
     });
-    const blob = await res.blob();
+    globalThis.clearTimeout(requestTimeout);
+
+    if (!response.ok) {
+      lastVoiceDebug = { status: 'failed', mode: 'vite-tts', detail: `http=${response.status}` };
+      return speakWithBrowserTTS(text);
+    }
+
+    const blob = await response.blob();
     const url = URL.createObjectURL(blob);
     const audio = new Audio(url);
-    audio.play();
-  } catch (e) {
-    console.error('ElevenLabs error:', e);
+
+    return await new Promise((resolve) => {
+      const playbackTimeout = globalThis.setTimeout(() => {
+        URL.revokeObjectURL(url);
+        lastVoiceDebug = { status: 'failed', mode: 'vite-tts', detail: 'audio playback timeout' };
+        resolve(speakWithBrowserTTS(text));
+      }, 12000);
+
+      audio.onplay = () => {
+        lastVoiceDebug = { status: 'speaking', mode: 'vite-tts', detail: 'macOS say playback started' };
+      };
+      audio.onended = () => {
+        globalThis.clearTimeout(playbackTimeout);
+        URL.revokeObjectURL(url);
+        lastVoiceDebug = { status: 'finished', mode: 'vite-tts', detail: 'macOS say playback complete' };
+        resolve(true);
+      };
+      audio.onerror = () => {
+        globalThis.clearTimeout(playbackTimeout);
+        URL.revokeObjectURL(url);
+        lastVoiceDebug = { status: 'failed', mode: 'vite-tts', detail: 'audio element error' };
+        resolve(speakWithBrowserTTS(text));
+      };
+      audio.play().catch(() => {
+        globalThis.clearTimeout(playbackTimeout);
+        URL.revokeObjectURL(url);
+        lastVoiceDebug = { status: 'failed', mode: 'vite-tts', detail: 'audio.play blocked' };
+        resolve(speakWithBrowserTTS(text));
+      });
+    });
+  } catch (error) {
+    lastVoiceDebug = {
+      status: 'failed',
+      mode: 'vite-tts',
+      detail: error?.name === 'AbortError' ? 'tts request timeout' : (error?.message || 'request error'),
+    };
+    return speakWithBrowserTTS(text);
+  }
+}
+
+export async function generateSessionPlan({ name, zones, romFindings, activities, notes, vitals }) {
+  const zoneNames = zones.map(z => z.replaceAll('_', ' ')).join(', ');
+  const romSummary = romFindings.length
+    ? romFindings.map(f => `${f.test.replace(/_/g, ' ')}: ${f.body_part} (${f.side}) — ${f.sensations.join(', ')}`).join('; ')
+    : 'No ROM tests recorded';
+  const actSummary = activities.ranked.length ? activities.ranked.join(', ') : 'Not specified';
+  const vitalsSummary = vitals
+    ? `HR ${vitals.hr_bpm} BPM, HRV ${vitals.hrv_sdnn_ms} ms, Breath rate ${vitals.breath_rate_bpm}/min`
+    : 'Not measured';
+
+  const prompt = `Practitioner assessment for ${name || 'client'}.
+Active zones: ${zoneNames}.
+ROM findings: ${romSummary}.
+Daily activities (ranked by time): ${actSummary}.
+Sleep posture: ${activities.sleep_posture || 'not specified'}.
+Makes discomfort worse: ${(activities.makes_worse || []).join(', ') || 'not specified'}.
+Position tolerance: ${activities.position_tolerance || 'not specified'}.
+Vitals: ${vitalsSummary}.
+Notes: ${notes || 'none'}.
+
+Return ONLY this JSON:
+{
+  "analysis_1": "<2-3 sentence clinical observation for the practitioner covering primary drivers of discomfort based on zones and ROM findings>",
+  "analysis_2": "<2-3 sentence biometric and movement quality insight covering vitals, asymmetry risk, and readiness>",
+  "protocol_recommendation": "<name of the most appropriate protocol from: PolarWave 36 Restore, PolarWave 18 Release, PolarWave 9 Balance, Mobility Surge, Deep Session, Contrast Pulse 9>",
+  "protocol_reason": "<1 sentence explaining why this protocol suits this client today>",
+  "readiness_score": <0-100>,
+  "readiness_label": "<Low|Moderate|Good|Excellent>",
+  "session_focus": "<1 short phrase: primary therapeutic intent for this session>"
+}`;
+
+  const fallback = {
+    analysis_1: `${name || 'Client'} presents with primary discomfort in the ${zoneNames} area. ROM findings indicate restricted mobility patterns that may benefit from targeted thermal contrast work. Recommend addressing the primary zone first before progressing to adjacent areas.`,
+    analysis_2: vitals
+      ? `Resting HR of ${vitals.hr_bpm} BPM and HRV of ${vitals.hrv_sdnn_ms} ms indicate ${vitals.hrv_sdnn_ms >= 40 ? 'adequate recovery capacity for an active session' : 'a reduced autonomic tone — a gentler recovery protocol is recommended today'}.`
+      : 'Biometric scan not performed — session intensity should be guided by reported discomfort levels and movement quality observations.',
+    protocol_recommendation: 'PolarWave 36 "Restore"',
+    protocol_reason: 'Restorative thermal alternation supports tissue mobility and recovery readiness.',
+    readiness_score: vitals ? (vitals.hrv_sdnn_ms >= 40 ? 68 : 52) : 60,
+    readiness_label: vitals ? (vitals.hrv_sdnn_ms >= 40 ? 'Good' : 'Moderate') : 'Moderate',
+    session_focus: `${zoneNames} mobility restoration`,
+  };
+
+  if (!CLAUDE_KEY) return fallback;
+
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': CLAUDE_KEY,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 500,
+        system: SYSTEM_PROMPT,
+        messages: [{ role: 'user', content: prompt }],
+      }),
+    });
+    const data = await res.json();
+    const text = data.content?.[0]?.text || '';
+    const clean = text.replace(/^```(?:json)?\s*|\s*```$/g, '').trim();
+    return { ...fallback, ...JSON.parse(clean) };
+  } catch {
+    return fallback;
   }
 }
 

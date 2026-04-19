@@ -1,4 +1,16 @@
-import { ArrowLeft } from 'lucide-react';
+import {
+  ArrowLeft,
+  ArrowRight,
+  BrainCircuit,
+  Camera,
+  Gauge,
+  HeartPulse,
+  Layers3,
+  Microscope,
+  ShieldCheck,
+  Sparkles,
+  Waves,
+} from 'lucide-react';
 import { Link } from 'react-router-dom';
 import './HackathonResources.css';
 
@@ -249,6 +261,100 @@ const limitations = [
   ['Multi-camera > single camera', 'OpenCap with 2+ phones significantly outperforms a single angle.'],
 ];
 
+const buildFlow = [
+  {
+    step: '01',
+    title: 'Area of Focus',
+    body: 'Start by identifying where discomfort lives in the body map. This is the intake anchor and the first screen practitioners use to localize concern.',
+  },
+  {
+    step: '02',
+    title: 'Range of Motion',
+    body: 'Capture how the patient moves through the painful zone, compare left versus right, and translate mobility into measurable motion limits.',
+  },
+  {
+    step: '03',
+    title: 'Daily Activities',
+    body: 'Rank what makes symptoms worse during work, training, posture, and day-to-day life so the system understands functional impact, not just raw pain.',
+  },
+  {
+    step: '04',
+    title: 'Final Remarks',
+    body: 'Finish with practitioner notes, synthesis, and a clear recommendation that can feed a protocol choice, report, or next-step recovery summary.',
+  },
+];
+
+const statCards = [
+  { label: 'Movement datasets', value: '9', icon: Layers3 },
+  { label: 'Vitals datasets', value: '4', icon: HeartPulse },
+  { label: 'Signals to extract', value: '11', icon: Gauge },
+  { label: 'Starter tools', value: '9', icon: Microscope },
+];
+
+const challengeCards = [
+  {
+    title: 'Camera-first intake',
+    body: 'Use body landmarks, voice, and visible biometrics to create a calmer intake flow before the session begins.',
+    icon: Camera,
+  },
+  {
+    title: 'Recovery intelligence',
+    body: 'Combine ROM, asymmetry, and HRV into a single clinician-facing readiness or recovery layer.',
+    icon: BrainCircuit,
+  },
+  {
+    title: 'Protocol matching',
+    body: 'Map detected movement patterns and physiological state to the right Hydrawav3 protocol sequence.',
+    icon: Waves,
+  },
+];
+
+const sessionFlowCards = [
+  {
+    step: 'Step 1',
+    title: 'Area of Focus',
+    detail: 'Body map selection, discomfort zone targeting, and side-specific context.',
+  },
+  {
+    step: 'Step 2',
+    title: 'Range of Motion',
+    detail: 'Mobility measurement, asymmetry checks, and movement behavior capture.',
+  },
+  {
+    step: 'Step 3',
+    title: 'Daily Activities',
+    detail: 'Activity ranking, aggravating factors, sleep posture, and functional patterns.',
+  },
+  {
+    step: 'Step 4',
+    title: 'Final Remarks',
+    detail: 'Clinician notes, summary output, and report generation before device setup.',
+  },
+];
+
+const overviewCards = [
+  {
+    value: '01',
+    title: 'Product-first flow',
+    body: 'Anchored to the same 4-step practitioner journey shown in the Hydrawav3 assessment screens.',
+  },
+  {
+    value: '13',
+    title: 'Datasets and references',
+    body: 'Movement and contactless vitals sources for camera-based recovery intelligence and rehab scoring.',
+  },
+  {
+    value: '11',
+    title: 'Extractable signals',
+    body: 'ROM, gait, asymmetry, HR, breathing, HRV, and the practical limits of RGB-based inference.',
+  },
+  {
+    value: 'AI',
+    title: 'Prototype direction',
+    body: 'Turn raw body and face signals into intake support, protocol matching, and report generation.',
+  },
+];
+
 function ExternalLink({ href, children, className }) {
   return (
     <a href={href} target="_blank" rel="noreferrer" className={className}>
@@ -260,28 +366,105 @@ function ExternalLink({ href, children, className }) {
 export default function HackathonResources() {
   return (
     <div className="hackathon-page">
+      <div className="hackathon-orb hackathon-orb-left" />
+      <div className="hackathon-orb hackathon-orb-right" />
+
       <Link to="/login" className="hackathon-top-link">
         <ArrowLeft size={16} />
         Back to app
       </Link>
 
-      <div className="hackathon-hero">
-        <h1>
-          <span>Hydrawav3</span> Hackathon
-        </h1>
-        <p className="hackathon-tagline">
-          Use camera input to capture human movement, extract wellness data, and build something
-          that helps people recover better.
-        </p>
-      </div>
+      <header className="hackathon-hero">
+        <div className="hackathon-hero-grid">
+          <div className="hackathon-hero-copy">
+            <div className="hackathon-kicker">
+              <Sparkles size={14} />
+              Hydrawav3 hackathon command center
+            </div>
+            <h1>
+              Build a <span>future-facing recovery experience</span> from camera, movement, and
+              wellness data.
+            </h1>
+            <p className="hackathon-tagline">
+              Everything you need is here: demo links, app credentials, movement datasets,
+              contactless vitals references, extraction targets, tools, architecture, and the
+              practical constraints that should shape the product.
+            </p>
 
-      <div className="hackathon-section-nav">
+            <div className="hackathon-hero-actions">
+              <a href="#start-here" className="hackathon-primary-button">
+                Open resources
+                <ArrowRight size={16} />
+              </a>
+              <a href="#architecture" className="hackathon-secondary-button">
+                View pipeline
+              </a>
+            </div>
+
+            <div className="hackathon-stat-row">
+              {statCards.map((item) => {
+                const Icon = item.icon;
+                return (
+                  <div key={item.label} className="hackathon-stat-card">
+                    <div className="hackathon-stat-icon">
+                      <Icon size={18} />
+                    </div>
+                    <div className="hackathon-stat-value">{item.value}</div>
+                    <div className="hackathon-stat-label">{item.label}</div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="hackathon-hero-panel">
+            <div className="hackathon-panel-shell">
+              <div className="hackathon-panel-header">
+                <div>
+                  <div className="hackathon-label">Build Flow</div>
+                  <h2 className="hackathon-panel-title">How teams should approach the hackathon</h2>
+                </div>
+                <span className="hackathon-panel-badge">GlobeHack 2026</span>
+              </div>
+
+              <div className="hackathon-flow-list">
+                {buildFlow.map((item) => (
+                  <div key={item.step} className="hackathon-flow-item">
+                    <div className="hackathon-flow-step">{item.step}</div>
+                    <div>
+                      <div className="hackathon-flow-title">{item.title}</div>
+                      <p>{item.body}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="hackathon-signal-board">
+                <div className="hackathon-signal-heading">
+                  <ShieldCheck size={16} />
+                  Build around measurable outputs
+                </div>
+                <div className="hackathon-signal-grid">
+                  <span>ROM</span>
+                  <span>Asymmetry</span>
+                  <span>Gait</span>
+                  <span>Heart rate</span>
+                  <span>Breath rate</span>
+                  <span>HRV</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <nav className="hackathon-section-nav">
         {[
           ['#start-here', 'Start Here'],
           ['#app-access', 'App Access'],
-          ['#datasets', 'Datasets'],
-          ['#vitals', 'Vitals Datasets'],
-          ['#extraction', 'What You Can Extract'],
+          ['#datasets', 'Movement Data'],
+          ['#vitals', 'Vitals Data'],
+          ['#extraction', 'Extractable Signals'],
           ['#tools', 'Tools'],
           ['#architecture', 'Architecture'],
           ['#limitations', 'Limitations'],
@@ -291,15 +474,83 @@ export default function HackathonResources() {
             {label}
           </a>
         ))}
-      </div>
+      </nav>
 
-      <div className="hackathon-container">
+      <main className="hackathon-container">
+        <section className="hackathon-overview-band">
+          {overviewCards.map((item) => (
+            <div key={item.title} className="hackathon-overview-card">
+              <div className="hackathon-overview-value">{item.value}</div>
+              <div className="hackathon-overview-title">{item.title}</div>
+              <p>{item.body}</p>
+            </div>
+          ))}
+        </section>
+
+        <section className="hackathon-step-rail-section">
+          <div className="hackathon-section-heading">
+            <div>
+              <div className="hackathon-label">Hydrawav3 Session Flow</div>
+              <h2>The 4 practitioner steps from the original product flow</h2>
+            </div>
+            <p>
+              This is the sequence shown in your screenshots. A strong hackathon prototype should
+              support or improve this exact progression rather than replacing it with something
+              unrelated.
+            </p>
+          </div>
+          <div className="hackathon-step-rail">
+            <div className="hackathon-step-line" />
+            {sessionFlowCards.map((item, index) => (
+              <div key={item.step} className="hackathon-step-card">
+                <div className="hackathon-step-marker">
+                  <span className="hackathon-step-dot">{index + 1}</span>
+                  {index < sessionFlowCards.length - 1 ? <span className="hackathon-step-connector" /> : null}
+                </div>
+                <div className="hackathon-step-topline">
+                  <span className="hackathon-step-pill">{item.step}</span>
+                  <span className="hackathon-step-index">Active flow</span>
+                </div>
+                <h3>{item.title}</h3>
+                <p>{item.detail}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section className="hackathon-strip">
+          {challengeCards.map((item) => {
+            const Icon = item.icon;
+            return (
+              <div key={item.title} className="hackathon-strip-card">
+                <div className="hackathon-strip-icon">
+                  <Icon size={18} />
+                </div>
+                <div className="hackathon-strip-title">{item.title}</div>
+                <p>{item.body}</p>
+              </div>
+            );
+          })}
+        </section>
+
         <section id="start-here" className="hackathon-section">
-          <h2>Start Here</h2>
+          <div className="hackathon-section-heading">
+            <div>
+              <div className="hackathon-label">Start Here</div>
+              <h2>Core resources for the team</h2>
+            </div>
+            <p>
+              These are the fastest entry points into the product, the workflow, and the full
+              resource set.
+            </p>
+          </div>
           <div className="hackathon-essentials">
             {essentials.map((item) => (
               <ExternalLink key={item.title} href={item.url} className="hackathon-big-link">
-                <div className="hackathon-label">{item.label}</div>
+                <div className="hackathon-link-topline">
+                  <span className="hackathon-label">{item.label}</span>
+                  <span className="hackathon-link-chip">Open</span>
+                </div>
                 <div className="hackathon-big-link-title">{item.title}</div>
                 <div className="hackathon-desc">{item.desc}</div>
                 <div className="hackathon-url">{item.urlLabel} →</div>
@@ -309,64 +560,106 @@ export default function HackathonResources() {
         </section>
 
         <section id="app-access" className="hackathon-section">
-          <h2>Hydrawav3 App Access</h2>
-          <div className="hackathon-cred-box">
-            <div className="hackathon-label">Login Credentials</div>
-            <div className="hackathon-cred-row">
-              <div>
-                <strong>URL:</strong>{' '}
-                <ExternalLink href="https://www.hydrawav3.studio" className="hackathon-card-link">
-                  www.Hydrawav3.studio
-                </ExternalLink>{' '}
-                (use Chrome or Edge)
+          <div className="hackathon-split-grid">
+            <div className="hackathon-cred-box">
+              <div className="hackathon-label">Login Credentials</div>
+              <h2 className="hackathon-panel-title">Hydrawav3 app access</h2>
+              <div className="hackathon-cred-row">
+                <div>
+                  <strong>URL:</strong>{' '}
+                  <ExternalLink href="https://www.hydrawav3.studio" className="hackathon-card-link">
+                    www.Hydrawav3.studio
+                  </ExternalLink>{' '}
+                  (use Chrome or Edge)
+                </div>
+              </div>
+              <div className="hackathon-cred-row">
+                <div>
+                  <strong>Username:</strong> annierae
+                </div>
+                <div>
+                  <strong>Password:</strong> anniesturm
+                </div>
+              </div>
+              <div className="hackathon-cred-note">
+                After logging in, select your organization. If the loading icon hangs, refresh and
+                select the organization again.
               </div>
             </div>
-            <div className="hackathon-cred-row">
-              <div>
-                <strong>Username:</strong> annierae
-              </div>
-              <div>
-                <strong>Password:</strong> anniesturm
-              </div>
-            </div>
-            <div className="hackathon-cred-note">
-              After logging in, select your organization. The loading icon may not stop. Refresh
-              your browser and select the organization again.
-            </div>
-          </div>
-        </section>
 
-        <section className="hackathon-section">
-          <h2>Follow Hydrawav3 — Testimonials &amp; Real Results</h2>
-          <div className="hackathon-social-row">
-            {socialLinks.map(([label, href]) => (
-              <ExternalLink key={label} href={href} className="hackathon-social-link">
-                {label}
-              </ExternalLink>
-            ))}
+            <div className="hackathon-follow-box">
+              <div className="hackathon-label">Social Proof</div>
+              <h2 className="hackathon-panel-title">Testimonials and real-world channels</h2>
+              <p className="hackathon-desc">
+                Use these when you need public-facing examples, traction, or visual proof points
+                for your deck and prototype narrative.
+              </p>
+              <div className="hackathon-social-row">
+                {socialLinks.map(([label, href]) => (
+                  <ExternalLink key={label} href={href} className="hackathon-social-link">
+                    {label}
+                  </ExternalLink>
+                ))}
+              </div>
+            </div>
           </div>
         </section>
 
         <section id="datasets" className="hackathon-section">
-          <h2>Movement &amp; Range of Motion Datasets</h2>
+          <div className="hackathon-section-heading">
+            <div>
+              <div className="hackathon-label">Movement & Range Of Motion</div>
+              <h2>Datasets for pose, form, gait, and rehab analysis</h2>
+            </div>
+            <p>
+              These sources are the main training and benchmarking pool for movement quality,
+              corrective exercise, and kinematic reasoning.
+            </p>
+          </div>
+          <div className="hackathon-callout-row">
+            <ExternalLink
+              href="https://zenodo.org/records/13305826"
+              className="hackathon-callout-card"
+            >
+              <div className="hackathon-label">Recommended Source</div>
+              <h3>REHAB24-6 on Zenodo</h3>
+              <p>
+                Strong fit for correct versus incorrect rehab form detection, which maps well to
+                Step 2 range-of-motion analysis and guided intake feedback.
+              </p>
+              <span className="hackathon-card-link">Open dataset →</span>
+            </ExternalLink>
+            <ExternalLink
+              href="https://pmc.ncbi.nlm.nih.gov/articles/PMC12992533/"
+              className="hackathon-callout-card"
+            >
+              <div className="hackathon-label">Recommended Source</div>
+              <h3>MobiPhysio study</h3>
+              <p>
+                Useful for active ROM exercise footage in real-world settings if you want a more
+                practical movement baseline for rehab-oriented scoring.
+              </p>
+              <span className="hackathon-card-link">Open paper →</span>
+            </ExternalLink>
+          </div>
           <div className="hackathon-dataset-grid">
             {movementDatasets.map((dataset, index) => (
               <div key={dataset.title} className="hackathon-card">
-                <span className="hackathon-card-num">{index + 1}</span>
-                <h3 className="hackathon-card-heading">{dataset.title}</h3>
+                <div className="hackathon-card-head">
+                  <span className="hackathon-card-num">{index + 1}</span>
+                  <h3 className="hackathon-card-heading">{dataset.title}</h3>
+                </div>
                 <ul>
                   {dataset.items.map((item) => (
                     <li key={item}>{item}</li>
                   ))}
                 </ul>
-                <div>
-                  {dataset.links.length > 0
-                    ? dataset.links.map(([label, href]) => (
-                        <ExternalLink key={label} href={href} className="hackathon-card-link">
-                          {label} →
-                        </ExternalLink>
-                      ))
-                    : null}
+                <div className="hackathon-card-links">
+                  {dataset.links.map(([label, href]) => (
+                    <ExternalLink key={label} href={href} className="hackathon-card-link">
+                      {label} →
+                    </ExternalLink>
+                  ))}
                 </div>
               </div>
             ))}
@@ -374,34 +667,58 @@ export default function HackathonResources() {
         </section>
 
         <section id="vitals" className="hackathon-section">
-          <h2>Contactless Vitals Datasets</h2>
+          <div className="hackathon-section-heading">
+            <div>
+              <div className="hackathon-label">Contactless Vitals</div>
+              <h2>Datasets for heart rate, breathing, and HRV from video</h2>
+            </div>
+            <p>
+              This is the camera biometrics lane. It is useful for recovery state, readiness, and
+              low-friction intake signals.
+            </p>
+          </div>
           <div className="hackathon-vitals-intro">
             For extracting heart rate, breath rate, and HRV from camera video. Uses <strong>remote
             photoplethysmography (rPPG)</strong> so the camera detects micro-changes in skin color
             caused by blood flow.
           </div>
-          <div className="hackathon-dataset-grid" style={{ marginTop: 16 }}>
+          <div className="hackathon-dataset-grid hackathon-vitals-grid">
             {vitalDatasets.map((dataset, index) => (
               <div key={dataset.title} className="hackathon-card">
-                <span className="hackathon-card-num">{index + 1}</span>
-                <h3 className="hackathon-card-heading">{dataset.title}</h3>
+                <div className="hackathon-card-head">
+                  <span className="hackathon-card-num">{index + 1}</span>
+                  <h3 className="hackathon-card-heading">{dataset.title}</h3>
+                </div>
                 <ul>
                   {dataset.items.map((item) => (
                     <li key={item}>{item}</li>
                   ))}
                 </ul>
-                {dataset.links.map(([label, href]) => (
-                  <ExternalLink key={label} href={href} className="hackathon-card-link">
-                    {label} →
-                  </ExternalLink>
-                ))}
+                <div className="hackathon-card-links">
+                  {dataset.links.length
+                    ? dataset.links.map(([label, href]) => (
+                        <ExternalLink key={label} href={href} className="hackathon-card-link">
+                          {label} →
+                        </ExternalLink>
+                      ))
+                    : <span className="hackathon-muted-inline">Reference only</span>}
+                </div>
               </div>
             ))}
           </div>
         </section>
 
         <section id="extraction" className="hackathon-section">
-          <h2>What You Can Extract from Video</h2>
+          <div className="hackathon-section-heading">
+            <div>
+              <div className="hackathon-label">Output Layer</div>
+              <h2>What you can realistically extract from video</h2>
+            </div>
+            <p>
+              This table should drive product scope. Some signals are strong and practical now,
+              while others remain estimated or not feasible with standard RGB capture.
+            </p>
+          </div>
           <div className="hackathon-table-wrap">
             <table className="hackathon-table">
               <thead>
@@ -431,7 +748,16 @@ export default function HackathonResources() {
         </section>
 
         <section id="tools" className="hackathon-section">
-          <h2>Tools</h2>
+          <div className="hackathon-section-heading">
+            <div>
+              <div className="hackathon-label">Implementation Stack</div>
+              <h2>Tools that can get a prototype moving quickly</h2>
+            </div>
+            <p>
+              These are the most direct libraries and platforms for pose extraction, signal
+              processing, and report generation.
+            </p>
+          </div>
           <div className="hackathon-table-wrap">
             <table className="hackathon-table">
               <thead>
@@ -448,7 +774,15 @@ export default function HackathonResources() {
                       <strong>{name}</strong>
                     </td>
                     <td>{desc}</td>
-                    <td>{href ? <ExternalLink href={href} className="hackathon-card-link">{getIt}</ExternalLink> : <code>{getIt}</code>}</td>
+                    <td>
+                      {href ? (
+                        <ExternalLink href={href} className="hackathon-card-link">
+                          {getIt}
+                        </ExternalLink>
+                      ) : (
+                        <code>{getIt}</code>
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -457,14 +791,32 @@ export default function HackathonResources() {
         </section>
 
         <section id="architecture" className="hackathon-section">
-          <h2>Architecture</h2>
+          <div className="hackathon-section-heading">
+            <div>
+              <div className="hackathon-label">Reference Pipeline</div>
+              <h2>Suggested architecture for a camera-to-insight product</h2>
+            </div>
+            <p>
+              This is the core system story: capture, split body and face analysis, derive metrics,
+              and convert them into clinician-facing guidance.
+            </p>
+          </div>
           <div className="hackathon-arch-box">
             <pre>{architectureDiagram}</pre>
           </div>
         </section>
 
         <section id="limitations" className="hackathon-section">
-          <h2>Limitations</h2>
+          <div className="hackathon-section-heading">
+            <div>
+              <div className="hackathon-label">Constraints</div>
+              <h2>Limitations teams should design around</h2>
+            </div>
+            <p>
+              Strong concepts acknowledge what is easy, what is noisy, and what should remain
+              clearly labeled as estimation instead of diagnosis.
+            </p>
+          </div>
           <div className="hackathon-limits">
             {limitations.map(([title, body]) => (
               <div key={title} className="hackathon-limit-item">
@@ -475,7 +827,16 @@ export default function HackathonResources() {
         </section>
 
         <section id="quick-ref" className="hackathon-section">
-          <h2>All Datasets — Quick Reference</h2>
+          <div className="hackathon-section-heading">
+            <div>
+              <div className="hackathon-label">Quick Reference</div>
+              <h2>All datasets in one lookup table</h2>
+            </div>
+            <p>
+              Keep this section open while deciding whether your build is motion-heavy,
+              biometrics-heavy, or a hybrid.
+            </p>
+          </div>
           <div className="hackathon-table-wrap">
             <table className="hackathon-table">
               <thead>
@@ -492,18 +853,25 @@ export default function HackathonResources() {
                     <td>{name}</td>
                     <td>{type}</td>
                     <td>{format}</td>
-                    <td>{href ? <ExternalLink href={href} className="hackathon-card-link">{linkLabel}</ExternalLink> : linkLabel}</td>
+                    <td>
+                      {href ? (
+                        <ExternalLink href={href} className="hackathon-card-link">
+                          {linkLabel}
+                        </ExternalLink>
+                      ) : (
+                        linkLabel
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
         </section>
-      </div>
+      </main>
 
       <footer className="hackathon-footer">
-        Hydrawav3 Hackathon — April 2026 |{' '}
-        <a href="mailto:shiva@hydrawav3.com">shiva@hydrawav3.com</a> |{' '}
+        Hydrawav3 Hackathon — April 2026 | <a href="mailto:shiva@hydrawav3.com">shiva@hydrawav3.com</a> |{' '}
         <ExternalLink href="https://www.hydrawav3.com">hydrawav3.com</ExternalLink>
       </footer>
     </div>

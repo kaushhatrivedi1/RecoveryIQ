@@ -25,7 +25,7 @@ import {
 } from 'lucide-react';
 import { PageShell } from '../components/AppChrome';
 import { useApp } from '../context/AppContext';
-import { generateDashboardInsight } from '../services/api';
+import { generateDashboardInsight } from '../services/insights';
 import { getPatientStatus, PROTOCOLS } from '../data/mockData';
 
 function StatusBadge({ status }) {

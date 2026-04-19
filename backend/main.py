@@ -13,6 +13,8 @@ import base64
 import json
 import os
 import re
+import subprocess
+import tempfile
 import time
 from collections import deque
 from typing import List, Optional
@@ -23,9 +25,11 @@ import mediapipe as mp
 import numpy as np
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
+from rom_reference import ROMReference
 
-app = FastAPI(title="RecoveryIQ Backend", version="2.0.0")
+app = FastAPI(title="RecoveryIQ Backend", version="2.1.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -37,6 +41,7 @@ app.add_middleware(
 mp_hands = mp.solutions.hands
 mp_pose = mp.solutions.pose
 mp_face_mesh = mp.solutions.face_mesh
+rom_reference = ROMReference()
 
 CLAUDE_KEY = os.getenv("CLAUDE_KEY", "")
 
@@ -68,12 +73,21 @@ class VideoFramesRequest(BaseModel):
     fps: Optional[float] = 10.0
     patient_name: Optional[str] = ""
 
+class MovementFramesRequest(BaseModel):
+    frames_b64: List[str]
+    fps: Optional[float] = 8.0
+    movement_type: str
+    patient_name: Optional[str] = ""
+
 class FullAssessmentRequest(BaseModel):
     """Combined request: video frames + existing intake data for full report."""
     frames_b64: List[str]
     fps: Optional[float] = 10.0
     patient_name: Optional[str] = ""
     intake: Optional[dict] = {}  # zones, discomfort, behavior, duration, notes
+
+class TTSRequest(BaseModel):
+    text: str
 
 
 # ── Keyword extraction helpers ───────────────────────────────────────────────
@@ -143,6 +157,40 @@ def extract_discomfort(text):
     if any(w in t for w in ["mild", "slight", "little", "minor", "small"]):
         return 3
     return 5
+
+
+def synthesize_mac_speech(text: str) -> str:
+    """
+    Generate a WAV file using macOS `say`.
+    Returns the temporary WAV file path.
+    """
+    if os.uname().sysname != "Darwin":
+        raise HTTPException(status_code=501, detail="Local speech is only available on macOS")
+
+    if not text.strip():
+        raise HTTPException(status_code=400, detail="Text is required")
+
+    temp_dir = tempfile.mkdtemp(prefix="recoveryiq-tts-")
+    aiff_path = os.path.join(temp_dir, "speech.aiff")
+    wav_path = os.path.join(temp_dir, "speech.wav")
+
+    try:
+        subprocess.run(
+            ["say", "-v", "Samantha", "-o", aiff_path, text],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["afconvert", "-f", "WAVE", "-d", "LEI16@22050", aiff_path, wav_path],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        raise HTTPException(status_code=500, detail=exc.stderr.strip() or "Speech synthesis failed") from exc
+
+    return wav_path
 
 
 # ── rPPG — Heart Rate / HRV from face color ──────────────────────────────────
@@ -332,6 +380,132 @@ def analyze_single_pose_frame(frame):
         "asymmetry_flags": flags,
         "shoulder_diff_pct": round(shoulder_diff * 100, 1),
         "hip_diff_pct":      round(hip_diff * 100, 1),
+        "shoulder_span_pct": round(abs(lm[11].x - lm[12].x) * 100, 1),
+        "hip_span_pct":      round(abs(lm[23].x - lm[24].x) * 100, 1),
+    }
+
+
+def analyze_movement_sequence(frames_b64, movement_type: str, fps: float = 8.0):
+    valid = []
+    sample_frames = frames_b64[::2] if len(frames_b64) > 24 else frames_b64
+
+    for b64 in sample_frames:
+        frame = decode_frame(b64)
+        if frame is None:
+            continue
+        result = analyze_single_pose_frame(frame)
+        if result and result.get("joint_angles"):
+            valid.append(result)
+
+    if not valid:
+        return {"detected": False, "error": "No pose detected in movement capture"}
+
+    joint_keys = ["left_shoulder", "right_shoulder", "left_hip", "right_hip", "left_knee", "right_knee"]
+    angle_series = {
+        joint: [frame["joint_angles"][joint] for frame in valid if joint in frame["joint_angles"]]
+        for joint in joint_keys
+    }
+
+    ranges = {}
+    for joint, values in angle_series.items():
+        if not values:
+            continue
+        ranges[joint] = {
+            "min": round(float(min(values)), 1),
+            "max": round(float(max(values)), 1),
+            "range": round(float(max(values) - min(values)), 1),
+            "avg": round(float(sum(values) / len(values)), 1),
+        }
+
+    movement_flags = []
+    suggested_findings = []
+    asymmetry_flags = []
+    severity_score = 62
+    movement_type = movement_type.strip().lower()
+
+    def side_range(left_joint, right_joint, label):
+        left = ranges.get(left_joint, {}).get("range", 0)
+        right = ranges.get(right_joint, {}).get("range", 0)
+        diff = abs(left - right)
+        if diff > 10:
+            asymmetry_flags.append(f"{label} excursion asymmetry — {diff:.0f}° side-to-side difference")
+        return left, right, diff
+
+    if movement_type in {"squat", "sit_to_stand"}:
+        left_knee, right_knee, knee_diff = side_range("left_knee", "right_knee", "Knee")
+        left_hip, right_hip, hip_diff = side_range("left_hip", "right_hip", "Hip")
+        knee_avg = (left_knee + right_knee) / 2
+        hip_avg = (left_hip + right_hip) / 2
+
+        if knee_avg < 35:
+            movement_flags.append("Limited knee excursion through the movement cycle.")
+            suggested_findings.append({"body_part": "Knees", "side": "Both", "sensations": ["Stiff", "Tight"]})
+            severity_score -= 12
+        if hip_avg < 25:
+            movement_flags.append("Hip contribution stays shallow, which may shift load upstream or downstream.")
+            suggested_findings.append({"body_part": "Hips", "side": "Both", "sensations": ["Stiff"]})
+            severity_score -= 10
+        if knee_diff > 10 or hip_diff > 10:
+            movement_flags.append("The movement pattern is asymmetric side to side.")
+            severity_score -= 8
+
+    elif movement_type == "shoulder_flexion":
+        left_sh, right_sh, shoulder_diff = side_range("left_shoulder", "right_shoulder", "Shoulder")
+        shoulder_avg = (left_sh + right_sh) / 2
+        if shoulder_avg < 20:
+            movement_flags.append("Overhead shoulder range appears limited during the capture.")
+            suggested_findings.append({"body_part": "Shoulders", "side": "Both", "sensations": ["Tight", "Stiff"]})
+            severity_score -= 12
+        if shoulder_diff > 12:
+            movement_flags.append("Left-right shoulder excursion is uneven during overhead motion.")
+            severity_score -= 8
+
+    elif movement_type == "gait":
+        left_knee, right_knee, knee_diff = side_range("left_knee", "right_knee", "Knee")
+        left_hip, right_hip, hip_diff = side_range("left_hip", "right_hip", "Hip")
+        if (left_knee + right_knee) / 2 < 18:
+            movement_flags.append("Stride cycle shows limited knee excursion.")
+            suggested_findings.append({"body_part": "Knees", "side": "Both", "sensations": ["Heavy/Fatigued", "Stiff"]})
+            severity_score -= 10
+        if knee_diff > 10 or hip_diff > 10:
+            movement_flags.append("Gait pattern shows a side-to-side compensation bias.")
+            severity_score -= 10
+
+    elif movement_type == "trunk_rotation":
+        shoulder_spans = [frame.get("shoulder_span_pct", 0) for frame in valid]
+        hip_spans = [frame.get("hip_span_pct", 0) for frame in valid]
+        shoulder_travel = max(shoulder_spans) - min(shoulder_spans) if shoulder_spans else 0
+        hip_travel = max(hip_spans) - min(hip_spans) if hip_spans else 0
+        if shoulder_travel < 6:
+            movement_flags.append("Torso rotation amplitude appears limited through the capture window.")
+            suggested_findings.append({"body_part": "Mid Back", "side": "Both", "sensations": ["Stiff", "Tight"]})
+            severity_score -= 12
+        if hip_travel > shoulder_travel:
+            movement_flags.append("Pelvic motion is overtaking thoracic rotation, suggesting lumbar compensation.")
+            suggested_findings.append({"body_part": "Lower Back", "side": "Both", "sensations": ["Achy", "Tight"]})
+            severity_score -= 10
+
+    quality = rom_reference.generate_rom_report(
+        {joint: data["avg"] for joint, data in ranges.items()},
+        patient_name="Movement capture",
+    )
+
+    all_flags = list(dict.fromkeys(movement_flags + asymmetry_flags + quality.get("all_flags", [])))[:6]
+    score = max(35, min(92, int((quality.get("score", 75) * 0.45) + (severity_score * 0.55))))
+    label = "Excellent" if score >= 82 else "Good" if score >= 68 else "Moderate" if score >= 52 else "Limited"
+
+    return {
+        "detected": True,
+        "movement_type": movement_type,
+        "frames_analyzed": len(valid),
+        "range_of_motion": ranges,
+        "asymmetry_flags": asymmetry_flags,
+        "movement_flags": movement_flags,
+        "all_flags": all_flags,
+        "quality_score": score,
+        "quality_label": label,
+        "rom_report": quality,
+        "suggested_findings": suggested_findings,
     }
 
 
@@ -371,6 +545,12 @@ def classify_asl_gesture(landmarks) -> str:
 @app.get("/health")
 def health():
     return {"status": "ok", "version": "2.0.0", "mediapipe": mp.__version__}
+
+
+@app.post("/api/tts")
+async def text_to_speech(req: TTSRequest):
+    wav_path = synthesize_mac_speech(req.text)
+    return FileResponse(wav_path, media_type="audio/wav", filename="speech.wav")
 
 
 @app.post("/api/analyze-speech")
@@ -482,6 +662,18 @@ async def analyze_video(req: VideoFramesRequest):
         "pose": pose_data,
         "frames_analyzed": len(req.frames_b64),
     }
+
+
+@app.post("/api/analyze-movement")
+async def analyze_movement(req: MovementFramesRequest):
+    if not req.frames_b64:
+        raise HTTPException(400, "No frames provided")
+
+    return analyze_movement_sequence(
+        req.frames_b64,
+        movement_type=req.movement_type,
+        fps=req.fps or 8.0,
+    )
 
 
 @app.post("/api/full-assessment")

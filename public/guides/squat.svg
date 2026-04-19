@@ -1,0 +1,19 @@
+<svg width="320" height="220" viewBox="0 0 320 220" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="320" height="220" rx="28" fill="#F7F2EC"/>
+  <rect x="95" y="26" width="130" height="168" rx="24" fill="#FFFDFC" stroke="#E8DED2"/>
+  <g transform="translate(160 58)">
+    <circle cx="0" cy="0" r="14" fill="#17303A"/>
+    <line x1="0" y1="18" x2="0" y2="78" stroke="#17303A" stroke-width="12" stroke-linecap="round"/>
+    <g>
+      <animateTransform attributeName="transform" type="translate" values="0 0;0 20;0 0" dur="2s" repeatCount="indefinite"/>
+      <line x1="0" y1="34" x2="-34" y2="42" stroke="#17303A" stroke-width="10" stroke-linecap="round"/>
+      <line x1="0" y1="34" x2="34" y2="42" stroke="#17303A" stroke-width="10" stroke-linecap="round"/>
+      <line x1="0" y1="78" x2="-26" y2="110" stroke="#17303A" stroke-width="10" stroke-linecap="round"/>
+      <line x1="-26" y1="110" x2="-6" y2="140" stroke="#17303A" stroke-width="10" stroke-linecap="round"/>
+      <line x1="0" y1="78" x2="26" y2="110" stroke="#17303A" stroke-width="10" stroke-linecap="round"/>
+      <line x1="26" y1="110" x2="6" y2="140" stroke="#17303A" stroke-width="10" stroke-linecap="round"/>
+    </g>
+    <line x1="-34" y1="148" x2="34" y2="148" stroke="#CBA989" stroke-width="8" stroke-linecap="round"/>
+  </g>
+  <text x="160" y="205" text-anchor="middle" fill="#6E7B8E" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="700">Squat</text>
+</svg>

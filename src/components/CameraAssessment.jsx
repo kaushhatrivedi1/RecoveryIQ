@@ -18,7 +18,6 @@ export default function CameraAssessment({ patientName, onAssessmentComplete, on
   const intervalRef = useRef(null);
 
   const [phase, setPhase] = useState('idle'); // idle | starting | capturing | analyzing | done | error
-  const [frames, setFrames] = useState([]);
   const [progress, setProgress] = useState(0);
   const [result, setResult] = useState(null);
   const [errorMsg, setErrorMsg] = useState('');
@@ -35,7 +34,6 @@ export default function CameraAssessment({ patientName, onAssessmentComplete, on
 
   async function startCapture() {
     setPhase('starting');
-    setFrames([]);
     setProgress(0);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -108,7 +106,6 @@ export default function CameraAssessment({ patientName, onAssessmentComplete, on
     clearInterval(intervalRef.current);
     stopStream();
     setPhase('idle');
-    setFrames([]);
     setProgress(0);
     setResult(null);
   }

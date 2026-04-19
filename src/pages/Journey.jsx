@@ -8,12 +8,10 @@ import {
   Star,
   ThumbsUp,
   TrendingDown,
-  Volume2,
   Zap,
 } from 'lucide-react';
 import { PageShell } from '../components/AppChrome';
 import { useApp } from '../context/AppContext';
-import { speakText } from '../services/api';
 import { calcRecoveryScore } from '../data/mockData';
 
 const LEVELS = [
@@ -62,9 +60,7 @@ export default function Journey() {
   const { patientId } = useParams();
   const navigate = useNavigate();
   const { patients, updatePatientScores } = useApp();
-  const [elevenKey, setElevenKey] = useState('');
   const [checkedIn, setCheckedIn] = useState(false);
-  const [speaking, setSpeaking] = useState(false);
 
   const patient = patients.find((entry) => entry.id === patientId) || patients[0];
   const scores = patient.recovery_scores;
@@ -107,20 +103,6 @@ export default function Journey() {
     });
 
     setCheckedIn(true);
-
-    const streakMessage =
-      newStreak >= 3 ? `Your ${newStreak}-day streak is incredible!` : newStreak > 0 ? 'Keep it up!' : '';
-    const message = `${
-      type === 'great' ? 'Excellent work' : type === 'okay' ? 'Good effort' : 'Thanks for checking in'
-    }, ${patient.name.split(' ')[0]}. Your Recovery Score is ${newScore} today${
-      delta >= 0 ? `, up ${Math.abs(delta)} points` : ''
-    }. ${streakMessage}`;
-
-    if (elevenKey) {
-      setSpeaking(true);
-      await speakText(message, elevenKey);
-      setSpeaking(false);
-    }
   }
 
   return (
@@ -259,12 +241,6 @@ export default function Journey() {
                 <div className="mt-2 text-sm leading-6 text-emerald-700/80">
                   Great work keeping the recovery routine active.
                 </div>
-                {speaking ? (
-                  <div className="mt-4 inline-flex items-center gap-2 text-sm font-medium text-sky-700">
-                    <Volume2 size={16} className="animate-pulse" />
-                    Playing voice message
-                  </div>
-                ) : null}
               </div>
             ) : (
               <>
@@ -299,19 +275,6 @@ export default function Journey() {
                       <div className="font-semibold">{option.label}</div>
                     </button>
                   ))}
-                </div>
-
-                <div className="mt-5">
-                  <label className="mb-2 block text-sm font-medium text-slate-600">
-                    ElevenLabs key for voice feedback
-                  </label>
-                  <input
-                    value={elevenKey}
-                    onChange={(e) => setElevenKey(e.target.value)}
-                    type="password"
-                    className="riq-input"
-                    placeholder="sk_... (optional)"
-                  />
                 </div>
               </>
             )}
