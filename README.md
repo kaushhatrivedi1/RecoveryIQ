@@ -2,6 +2,19 @@
 
 AI-powered practitioner console for the Hydrawav3 wellness device. Built for GlobeHack Season 1 · April 2025 · Team HRVengers.
 
+## Documentation
+
+Additional documentation lives in [`docs/INDEX.md`](./docs/INDEX.md).
+
+Available guides:
+
+- [Overview](./docs/OVERVIEW.md)
+- [Frontend Guide](./docs/FRONTEND.md)
+- [Backend Guide](./docs/BACKEND.md)
+- [API Reference](./docs/API.md)
+- [Marketing Funnel](./docs/MARKETING.md)
+- [Deployment Notes](./docs/DEPLOYMENT.md)
+
 ## What it does
 
 - **3D interactive body map** — click zones to select areas of focus

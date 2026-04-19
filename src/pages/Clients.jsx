@@ -4,6 +4,15 @@ import { useNavigate } from 'react-router-dom';
 import { PageShell } from '../components/AppChrome';
 import { useApp } from '../context/AppContext';
 
+function formatBodyContext(patient) {
+  const unitSystem = patient.unit_system || 'imperial';
+  const parts = [];
+  if (patient.age) parts.push(`Age ${patient.age}`);
+  if (patient.height) parts.push(unitSystem === 'metric' ? `${patient.height} cm` : `${patient.height} in`);
+  if (patient.weight) parts.push(unitSystem === 'metric' ? `${patient.weight} kg` : `${patient.weight} lb`);
+  return parts.join(' · ');
+}
+
 export default function Clients() {
   const navigate = useNavigate();
   const { patients, patientsLoading } = useApp();
@@ -70,7 +79,7 @@ export default function Clients() {
                     </div>
                   </div>
                   <div className="rounded-full bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-600">
-                    Age {patient.age || 'n/a'}
+                    {formatBodyContext(patient) || 'Profile pending'}
                   </div>
                 </div>
 

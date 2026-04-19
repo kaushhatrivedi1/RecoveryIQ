@@ -1,4 +1,8 @@
-const BACKEND = 'http://localhost:8000';
+const BACKEND = import.meta.env.VITE_APP_BACKEND || 'http://localhost:8000';
+
+export function getAppBackendBase() {
+  return BACKEND;
+}
 
 export async function fetchClients(query = '') {
   const url = new URL(`${BACKEND}/api/clients`);
