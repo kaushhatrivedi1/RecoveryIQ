@@ -110,25 +110,25 @@ async function speakQuestion(text, elevenKey) {
     // Browser TTS fallback
   return new Promise(resolve => {
     const doSpeak = () => {
+      window.speechSynthesis.cancel();
       const utter = new SpeechSynthesisUtterance(text);
-      utter.rate = 0.95;
-      utter.pitch = 1.0;
+      utter.rate = 0.9;
       utter.onend = resolve;
-      utter.onerror = resolve; // never hang if TTS errors
-      window.speechSynthesis.cancel(); // clear any stuck queue first
+      utter.onerror = resolve;
       window.speechSynthesis.speak(utter);
     };
 
-    // Chrome: voices may not be ready on first render
     const voices = window.speechSynthesis.getVoices();
     if (voices.length > 0) {
       doSpeak();
     } else {
-      window.speechSynthesis.onvoiceschanged = () => {
-        window.speechSynthesis.onvoiceschanged = null;
+      // Use addEventListener so multiple stacked calls don't conflict
+      const handler = () => {
+        window.speechSynthesis.removeEventListener('voiceschanged', handler);
         doSpeak();
       };
-      setTimeout(resolve, 3000); // give up after 3s if voices never load
+      window.speechSynthesis.addEventListener('voiceschanged', handler);
+      setTimeout(resolve, 4000);
     }
   });
 }
@@ -167,10 +167,7 @@ export default function VoiceIntake({ patientName, elevenKey, onIntakeComplete, 
     speakQuestion(text, elevenKeyRef.current).then(() => {
       if (!cancelled) setSpeaking(false);
     });
-    return () => {
-      cancelled = true;
-      window.speechSynthesis?.cancel();
-    };
+    return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step, done]);
 
