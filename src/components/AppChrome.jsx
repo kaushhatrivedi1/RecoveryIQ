@@ -1,9 +1,10 @@
-import { Activity, ChevronLeft } from 'lucide-react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Activity, ChevronLeft, LayoutDashboard, Radio, Stethoscope, Users } from 'lucide-react';
+import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom';
 
 export function BrandLockup({ subtitle = 'Adaptive Recovery Intelligence' }) {
+  const auth = localStorage.getItem('riq_auth');
   return (
-    <Link to="/dashboard" className="riq-brand no-underline">
+    <Link to={auth ? "/dashboard" : "/"} className="riq-brand no-underline">
       <span className="riq-brand-mark">
         <Activity className="text-[#1f7ae0]" size={22} />
       </span>
@@ -25,6 +26,15 @@ export function PageShell({
   contentWidth = 'max-w-7xl',
 }) {
   const navigate = useNavigate();
+  const location = useLocation();
+  const auth = localStorage.getItem('riq_auth');
+  const isProtectedPage = auth && location.pathname !== '/login' && location.pathname !== '/pricing' && location.pathname !== '/hackathon';
+  const navItems = [
+    { to: '/dashboard', label: 'Dashboard', Icon: LayoutDashboard },
+    { to: '/intake', label: 'Session', Icon: Stethoscope },
+    { to: '/clients', label: 'Clients', Icon: Users },
+    { to: '/devices', label: 'Devices', Icon: Radio },
+  ];
 
   return (
     <div className="riq-shell px-2 py-4 sm:px-4 sm:py-6">
@@ -44,6 +54,29 @@ export function PageShell({
           </div>
           {actions ? <div className="flex flex-wrap items-center justify-end gap-3">{actions}</div> : null}
         </header>
+
+        {isProtectedPage ? (
+          <nav className="mb-4 mt-3 overflow-x-auto">
+            <div className="inline-flex min-w-full items-center gap-2 rounded-full border border-slate-200/70 bg-white/55 p-1.5 backdrop-blur sm:min-w-0">
+            {navItems.map(({ to, label, Icon }) => (
+              <NavLink
+                key={to}
+                to={to}
+                className={({ isActive }) =>
+                  `inline-flex min-h-[2.5rem] items-center gap-2 whitespace-nowrap rounded-full px-4 py-2 text-sm font-semibold transition ${
+                    isActive
+                      ? 'bg-slate-950 text-white shadow-[0_8px_24px_rgba(15,23,42,0.14)]'
+                      : 'text-slate-500 hover:bg-white/80 hover:text-slate-950'
+                  }`
+                }
+              >
+                <Icon size={16} />
+                {label}
+              </NavLink>
+            ))}
+            </div>
+          </nav>
+        ) : null}
 
         <main className={`mx-auto ${contentWidth} pb-10 pt-8 sm:pt-10`}>
           {(title || subtitle || eyebrow) && (

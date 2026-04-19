@@ -6,3 +6,4 @@ numpy==1.26.4
 anthropic==0.28.0
 python-multipart==0.0.9
 Pillow==10.3.0
+scipy==1.13.0

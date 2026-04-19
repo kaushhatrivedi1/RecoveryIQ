@@ -1,0 +1,14 @@
+<svg width="320" height="220" viewBox="0 0 320 220" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="320" height="220" rx="28" fill="#F7F2EC"/>
+  <rect x="95" y="26" width="130" height="168" rx="24" fill="#FFFDFC" stroke="#E8DED2"/>
+  <g transform="translate(160 52)">
+    <line x1="-8" y1="10" x2="-8" y2="116" stroke="#17303A" stroke-width="14" stroke-linecap="round"/>
+    <g transform="translate(-8 116)">
+      <animateTransform attributeName="transform" type="rotate" values="-8 0 0;28 0 0;-8 0 0" dur="1.8s" repeatCount="indefinite"/>
+      <line x1="0" y1="0" x2="56" y2="0" stroke="#17303A" stroke-width="14" stroke-linecap="round"/>
+      <line x1="48" y1="0" x2="64" y2="-10" stroke="#17303A" stroke-width="10" stroke-linecap="round"/>
+    </g>
+    <line x1="-40" y1="132" x2="70" y2="132" stroke="#CBA989" stroke-width="8" stroke-linecap="round"/>
+  </g>
+  <text x="160" y="205" text-anchor="middle" fill="#6E7B8E" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="700">Ankle Dorsiflexion</text>
+</svg>

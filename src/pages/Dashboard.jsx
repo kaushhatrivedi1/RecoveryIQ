@@ -25,7 +25,7 @@ import {
 } from 'lucide-react';
 import { PageShell } from '../components/AppChrome';
 import { useApp } from '../context/AppContext';
-import { generateDashboardInsight } from '../services/api';
+import { generateDashboardInsight } from '../services/insights';
 import { getPatientStatus, PROTOCOLS } from '../data/mockData';
 
 function StatusBadge({ status }) {
@@ -62,6 +62,7 @@ export default function Dashboard() {
   const navigate = useNavigate();
   const [insights, setInsights] = useState({});
   const [loadingInsights, setLoadingInsights] = useState(false);
+  const trendPatients = patients;
 
   useEffect(() => {
     async function loadInsights() {
@@ -77,22 +78,33 @@ export default function Dashboard() {
     loadInsights();
   }, [patients]);
 
-  const totalSessions = patients.reduce((sum, patient) => sum + patient.sessions.length, 0);
-  const avgMobilityGain = Math.round(
-    (patients.reduce((sum, patient) => {
-      const gains = patient.sessions.map((session) => session.after_score - session.before_score);
-      return sum + gains.reduce((acc, gain) => acc + gain, 0) / (gains.length || 1);
-    }, 0) /
-      patients.length) *
-      10
-  );
+  const totalSessions = patients.reduce((sum, patient) => sum + (patient.sessions?.length || 0), 0);
+  const avgMobilityGain = patients.length
+    ? Math.round(
+        (patients.reduce((sum, patient) => {
+          const gains = (patient.sessions || []).map(
+            (session) => session.after_score - session.before_score
+          );
+          if (!gains.length) return sum;
+          return sum + gains.reduce((acc, gain) => acc + gain, 0) / gains.length;
+        }, 0) /
+          patients.length) *
+          10
+      )
+    : 0;
 
-  const trendData = patients[0].recovery_scores.map((score, index) => ({
-    day: `Day ${index + 1}`,
-    [patients[0].name.split(' ')[0]]: score.score,
-    [patients[1].name.split(' ')[0]]: patients[1].recovery_scores[index]?.score,
-    [patients[2].name.split(' ')[0]]: patients[2].recovery_scores[index]?.score,
-  }));
+  const trendLength = Math.max(
+    0,
+    ...trendPatients.map((entry) => entry.recovery_scores?.length || 0)
+  );
+  const trendData = Array.from({ length: trendLength }, (_, index) => {
+    const row = { day: `Day ${index + 1}` };
+    trendPatients.forEach((entry) => {
+      row[entry.name.split(' ')[0]] = entry.recovery_scores?.[index]?.score;
+    });
+    return row;
+  });
+  const trendColors = ['#1f7ae0', '#ea5b7a', '#13c3b0', '#f5a54a', '#8b5cf6', '#0d9f6e', '#ef4444', '#06b6d4'];
 
   const protocolStats = PROTOCOLS.slice(0, 6)
     .map((protocol, index) => ({
@@ -202,7 +214,7 @@ export default function Dashboard() {
               <h3 className="riq-section-title text-2xl font-semibold text-slate-950">Recovery Score Trends</h3>
               <p className="mt-1 text-sm text-slate-500">Seven-day movement across active clients</p>
             </div>
-            <span className="riq-pill text-slate-500">Live mock data</span>
+            <span className="riq-pill text-slate-500">Live trend view</span>
           </div>
 
           <ResponsiveContainer width="100%" height={260}>
@@ -217,21 +229,24 @@ export default function Dashboard() {
                   boxShadow: '0 18px 40px rgba(15,23,42,0.10)',
                 }}
               />
-              <Line type="monotone" dataKey="Maria" stroke="#1f7ae0" strokeWidth={3} dot={false} />
-              <Line type="monotone" dataKey="Marcus" stroke="#ea5b7a" strokeWidth={3} dot={false} />
-              <Line type="monotone" dataKey="Elena" stroke="#13c3b0" strokeWidth={3} dot={false} />
+              {trendPatients.map((entry, index) => (
+                <Line
+                  key={entry.id}
+                  type="monotone"
+                  dataKey={entry.name.split(' ')[0]}
+                  stroke={trendColors[index % trendColors.length]}
+                  strokeWidth={3}
+                  dot={false}
+                />
+              ))}
             </LineChart>
           </ResponsiveContainer>
 
           <div className="mt-4 flex flex-wrap gap-4">
-            {[
-              { name: 'Maria', color: '#1f7ae0' },
-              { name: 'Marcus', color: '#ea5b7a' },
-              { name: 'Elena', color: '#13c3b0' },
-            ].map((item) => (
-              <div key={item.name} className="flex items-center gap-2 text-sm text-slate-500">
-                <div className="h-3 w-3 rounded-full" style={{ backgroundColor: item.color }} />
-                {item.name}
+            {trendPatients.map((entry, index) => (
+              <div key={entry.id} className="flex items-center gap-2 text-sm text-slate-500">
+                <div className="h-3 w-3 rounded-full" style={{ backgroundColor: trendColors[index % trendColors.length] }} />
+                {entry.name.split(' ')[0]}
               </div>
             ))}
           </div>
@@ -278,10 +293,14 @@ export default function Dashboard() {
         </div>
 
         <div className="grid gap-4 xl:grid-cols-3">
-          {patients.map((patient) => {
+          {patients.length === 0 ? (
+            <div className="riq-card px-5 py-10 text-center text-slate-500 xl:col-span-3">
+              No client records yet. Create a client from the intake page to populate the dashboard.
+            </div>
+          ) : patients.map((patient) => {
             const status = getPatientStatus(patient);
-            const latestScore = patient.recovery_scores[patient.recovery_scores.length - 1]?.score || 0;
-            const streak = patient.recovery_scores[patient.recovery_scores.length - 1]?.streak || 0;
+            const latestScore = patient.recovery_scores?.[patient.recovery_scores.length - 1]?.score || 0;
+            const streak = patient.recovery_scores?.[patient.recovery_scores.length - 1]?.streak || 0;
 
             return (
               <article key={patient.id} className="riq-card px-5 py-5 transition-transform duration-200 hover:-translate-y-1">
@@ -308,7 +327,7 @@ export default function Dashboard() {
                     <div className="mt-1 text-xs uppercase tracking-[0.16em] text-amber-500">Streak</div>
                   </div>
                   <div className="rounded-2xl bg-cyan-50 px-3 py-4 text-center">
-                    <div className="text-2xl font-semibold text-cyan-700">{patient.sessions.length}</div>
+                    <div className="text-2xl font-semibold text-cyan-700">{patient.sessions?.length || 0}</div>
                     <div className="mt-1 text-xs uppercase tracking-[0.16em] text-cyan-500">Sessions</div>
                   </div>
                 </div>

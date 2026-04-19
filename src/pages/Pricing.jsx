@@ -11,7 +11,6 @@ const FREE_FEATURES = [
 
 const PRO_FEATURES = [
   'Smart Intake form with AI client brief',
-  'ElevenLabs voice readout for practitioners',
   'Gamified patient recovery journey',
   'Daily check-in and recovery score',
   'Practitioner outcomes dashboard',
