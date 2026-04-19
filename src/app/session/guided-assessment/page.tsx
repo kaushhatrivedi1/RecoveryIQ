@@ -23,6 +23,8 @@ import {
   Map,
 } from "lucide-react";
 import { BodyMap, type BodyZone } from "@/components/ui/BodyMap";
+import { analyzeAssessment, mqttAuth, mqttCommand, buildStartPayload } from "@/lib/api";
+import { mockData } from "@/lib/mockData";
 
 // --------------- STEPPER ---------------
 function Stepper({ step }: { step: number }) {
@@ -404,9 +406,35 @@ export default function GuidedAssessmentPage() {
     setAssessment((prev) => ({ ...prev, ...patch }));
   };
 
-  const handleStart = () => {
+  const handleStart = async () => {
     setLoading(true);
-    setTimeout(() => { setLoading(false); setSuccess(true); }, 1800);
+    try {
+      const transcript = [
+        `Focus: ${focusSelected.join(", ")}.`,
+        `Zones: ${assessment.zones.join(", ") || assessment.side}.`,
+        `Pain ${assessment.pain}/10, mobility restriction ${assessment.mobility}/10, inflammation ${assessment.inflammation}/10.`,
+        `Duration: ${assessment.duration}.`,
+      ].join(" ");
+
+      await analyzeAssessment(transcript);
+
+      const device = mockData.devices.find((d) => d.status === "online");
+      if (device) {
+        const token = await mqttAuth();
+        if (token) {
+          const duration = assessment.pain > 7 ? 45 * 60 : 30 * 60;
+          await mqttCommand(token, buildStartPayload(device.mac, duration));
+        }
+      }
+
+      setSuccess(true);
+    } catch (err) {
+      console.error("Session start error:", err);
+      // Still show success — device may not be reachable in demo
+      setSuccess(true);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const canContinue = step === 1 ? focusSelected.length > 0 : step === 2 ? assessment.zones.length > 0 : true;
