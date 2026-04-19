@@ -101,35 +101,29 @@ async function speakQuestion(text, elevenKey) {
         return new Promise(resolve => {
           const audio = new Audio(url);
           audio.onended = resolve;
-          audio.play();
+          audio.onerror = resolve;
+          audio.play().catch(resolve);
         });
       }
-    } catch { /* fall through */ }
+    } catch { /* fall through to browser TTS */ }
   }
 
-    // Browser TTS fallback
-  return new Promise(resolve => {
-    const doSpeak = () => {
-      window.speechSynthesis.cancel();
-      const utter = new SpeechSynthesisUtterance(text);
-      utter.rate = 0.9;
-      utter.onend = resolve;
-      utter.onerror = resolve;
-      window.speechSynthesis.speak(utter);
-    };
+  // Browser TTS — poll until voices are loaded (Chrome loads them async)
+  let waited = 0;
+  while (window.speechSynthesis.getVoices().length === 0 && waited < 3000) {
+    await new Promise(r => setTimeout(r, 150));
+    waited += 150;
+  }
 
-    const voices = window.speechSynthesis.getVoices();
-    if (voices.length > 0) {
-      doSpeak();
-    } else {
-      // Use addEventListener so multiple stacked calls don't conflict
-      const handler = () => {
-        window.speechSynthesis.removeEventListener('voiceschanged', handler);
-        doSpeak();
-      };
-      window.speechSynthesis.addEventListener('voiceschanged', handler);
-      setTimeout(resolve, 4000);
-    }
+  window.speechSynthesis.cancel();
+  await new Promise(r => setTimeout(r, 80)); // let cancel settle before speak
+
+  return new Promise(resolve => {
+    const utter = new SpeechSynthesisUtterance(text);
+    utter.rate = 0.9;
+    utter.onend = resolve;
+    utter.onerror = resolve;
+    window.speechSynthesis.speak(utter);
   });
 }
 
