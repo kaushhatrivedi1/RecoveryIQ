@@ -1,24 +1,31 @@
 """
-RecoveryIQ Python Backend
-- /api/analyze-speech  : Transcribes patient's spoken/typed words → structured intake JSON via Claude
-- /api/detect-sign     : Receives webcam frame → MediaPipe Hands → ASL gesture → letter/word
-- /api/analyze-pose    : Receives webcam frame → MediaPipe Pose → joint angles, asymmetry flags
+RecoveryIQ Python Backend — Full CV Pipeline
+
+Endpoints:
+  POST /api/analyze-speech    — transcript → structured intake JSON
+  POST /api/detect-sign       — webcam frame → ASL gesture letter
+  POST /api/analyze-pose      — webcam frame → joint angles + asymmetry
+  POST /api/analyze-video     — multi-frame buffer → rPPG HR/HRV + pose bundle
+  POST /api/full-assessment   — all signals → structured data bundle + LLM recovery report
 """
 
 import base64
 import json
 import os
 import re
-import numpy as np
+import time
+from collections import deque
+from typing import List, Optional
+
+import anthropic
 import cv2
 import mediapipe as mp
+import numpy as np
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional
-import anthropic
 
-app = FastAPI(title="RecoveryIQ Backend", version="1.0.0")
+app = FastAPI(title="RecoveryIQ Backend", version="2.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -27,192 +34,328 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# MediaPipe setup
 mp_hands = mp.solutions.hands
 mp_pose = mp.solutions.pose
-mp_drawing = mp.solutions.drawing_utils
+mp_face_mesh = mp.solutions.face_mesh
 
 CLAUDE_KEY = os.getenv("CLAUDE_KEY", "")
 
-SYSTEM_PROMPT = """You are a wellness intake assistant for Hydrawav3. Extract structured wellness information.
-Output ONLY valid JSON. Never use clinical language. Use: supports, recovery, mobility, wellness.
-Never say: treats, cures, diagnoses, medical, clinical."""
+WELLNESS_SYSTEM = """You are a wellness recovery assistant for Hydrawav3.
+Use only wellness language: supports, recovery, mobility, restoration, balance.
+Never say: treats, cures, diagnoses, medical, clinical, pain (say discomfort).
+Output ONLY valid JSON — no markdown fences, no explanation."""
+
+ASSESSMENT_SYSTEM = """You are a recovery intelligence engine for Hydrawav3 practitioners.
+Analyze biometric and movement data. Output ONLY valid JSON.
+Use wellness-only language. Practitioner makes all final decisions — you only surface insights."""
 
 
-# ── Models ──────────────────────────────────────────────────────────────────
+# ── Pydantic models ──────────────────────────────────────────────────────────
 
 class SpeechRequest(BaseModel):
     transcript: str
     patient_name: Optional[str] = ""
 
 class FrameRequest(BaseModel):
-    frame_b64: str  # base64-encoded JPEG frame from webcam
+    frame_b64: str
 
 class PoseFrameRequest(BaseModel):
     frame_b64: str
 
+class VideoFramesRequest(BaseModel):
+    """Buffer of base64 JPEG frames collected over ~10 seconds for rPPG."""
+    frames_b64: List[str]
+    fps: Optional[float] = 10.0
+    patient_name: Optional[str] = ""
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
+class FullAssessmentRequest(BaseModel):
+    """Combined request: video frames + existing intake data for full report."""
+    frames_b64: List[str]
+    fps: Optional[float] = 10.0
+    patient_name: Optional[str] = ""
+    intake: Optional[dict] = {}  # zones, discomfort, behavior, duration, notes
+
+
+# ── Keyword extraction helpers ───────────────────────────────────────────────
 
 BODY_ZONE_KEYWORDS = {
-    "neck": ["neck", "cervical", "throat", "nape"],
-    "left_shoulder": ["left shoulder", "left arm", "left rotator"],
+    "neck":           ["neck", "cervical", "throat", "nape"],
+    "left_shoulder":  ["left shoulder", "left arm", "left rotator"],
     "right_shoulder": ["right shoulder", "right arm", "right rotator"],
-    "upper_back": ["upper back", "between shoulders", "thoracic", "traps"],
-    "lower_back": ["lower back", "lumbar", "low back", "spine", "back pain"],
-    "left_hip": ["left hip", "left glute", "left pelvis"],
-    "right_hip": ["right hip", "right glute", "it band", "hip flexor"],
-    "left_knee": ["left knee", "left patella"],
-    "right_knee": ["right knee", "right patella"],
-    "left_calf": ["left calf", "left shin", "left leg"],
-    "right_calf": ["right calf", "right shin", "right leg"],
-    "chest": ["chest", "pec", "breast", "sternum"],
-    "left_arm": ["left elbow", "left forearm", "left bicep"],
-    "right_arm": ["right elbow", "right forearm", "right bicep"],
-    "left_foot": ["left foot", "left ankle", "left heel"],
-    "right_foot": ["right foot", "right ankle", "right heel"],
+    "upper_back":     ["upper back", "between shoulders", "thoracic", "traps"],
+    "lower_back":     ["lower back", "lumbar", "low back", "spine", "back pain"],
+    "left_hip":       ["left hip", "left glute", "left pelvis"],
+    "right_hip":      ["right hip", "right glute", "it band", "hip flexor"],
+    "left_knee":      ["left knee", "left patella"],
+    "right_knee":     ["right knee", "right patella"],
+    "left_calf":      ["left calf", "left shin", "left leg"],
+    "right_calf":     ["right calf", "right shin", "right leg"],
+    "chest":          ["chest", "pec", "breast", "sternum"],
+    "left_arm":       ["left elbow", "left forearm", "left bicep"],
+    "right_arm":      ["right elbow", "right forearm", "right bicep"],
+    "left_foot":      ["left foot", "left ankle", "left heel"],
+    "right_foot":     ["right foot", "right ankle", "right heel"],
 }
 
 DURATION_KEYWORDS = {
-    "Less than 6 weeks": ["few days", "week", "recently", "just started", "new", "acute"],
-    "6 weeks to 3 months": ["month", "couple months", "few months"],
-    "3 to 6 months": ["three months", "four months", "five months", "several months"],
-    "6 months to 1 year": ["six months", "half year", "most of the year"],
-    "More than 1 year": ["year", "years", "long time", "chronic", "forever", "always"],
+    "Less than 6 weeks":    ["few days", "week", "recently", "just started", "new", "acute"],
+    "6 weeks to 3 months":  ["month", "couple months", "few months"],
+    "3 to 6 months":        ["three months", "four months", "five months", "several months"],
+    "6 months to 1 year":   ["six months", "half year", "most of the year"],
+    "More than 1 year":     ["year", "years", "long time", "chronic", "forever", "always"],
 }
 
 BEHAVIOR_KEYWORDS = {
-    "Always Present": ["always", "constant", "never goes away", "all the time", "every day"],
-    "Comes and Goes": ["comes and goes", "sometimes", "on and off", "flares up", "intermittent"],
-    "Only with Certain Activities": ["when i run", "when i lift", "during", "only when", "after exercise"],
-    "Varies Day to Day": ["some days", "varies", "depends", "better some days", "worse some days"],
+    "Always Present":                ["always", "constant", "never goes away", "all the time", "every day"],
+    "Comes and Goes":                ["comes and goes", "sometimes", "on and off", "flares up", "intermittent"],
+    "Only with Certain Activities":  ["when i run", "when i lift", "during", "only when", "after exercise"],
+    "Varies Day to Day":             ["some days", "varies", "depends", "better some days", "worse some days"],
 }
 
-def keyword_extract_zones(text: str) -> list[str]:
-    text_lower = text.lower()
-    found = []
-    for zone, keywords in BODY_ZONE_KEYWORDS.items():
-        if any(kw in text_lower for kw in keywords):
-            found.append(zone)
-    return found or ["lower_back"]
+def keyword_extract_zones(text):
+    t = text.lower()
+    return [z for z, kws in BODY_ZONE_KEYWORDS.items() if any(k in t for k in kws)] or ["lower_back"]
 
-def keyword_extract_duration(text: str) -> str:
-    text_lower = text.lower()
-    for duration, keywords in DURATION_KEYWORDS.items():
-        if any(kw in text_lower for kw in keywords):
-            return duration
+def keyword_extract_duration(text):
+    t = text.lower()
+    for dur, kws in DURATION_KEYWORDS.items():
+        if any(k in t for k in kws):
+            return dur
     return "3 to 6 months"
 
-def keyword_extract_behavior(text: str) -> str:
-    text_lower = text.lower()
-    for behavior, keywords in BEHAVIOR_KEYWORDS.items():
-        if any(kw in text_lower for kw in keywords):
-            return behavior
+def keyword_extract_behavior(text):
+    t = text.lower()
+    for beh, kws in BEHAVIOR_KEYWORDS.items():
+        if any(k in t for k in kws):
+            return beh
     return "Comes and Goes"
 
-def extract_discomfort(text: str) -> int:
-    # Look for numbers 1-10
-    matches = re.findall(r'\b([1-9]|10)\b', text)
-    for m in matches:
-        val = int(m)
-        if 1 <= val <= 10:
-            return val
-    # Qualitative
-    text_lower = text.lower()
-    if any(w in text_lower for w in ["severe", "intense", "unbearable", "terrible", "very bad"]):
+def extract_discomfort(text):
+    for m in re.findall(r'\b([1-9]|10)\b', text):
+        v = int(m)
+        if 1 <= v <= 10:
+            return v
+    t = text.lower()
+    if any(w in t for w in ["severe", "intense", "unbearable", "terrible", "very bad"]):
         return 8
-    if any(w in text_lower for w in ["moderate", "medium", "significant", "quite"]):
+    if any(w in t for w in ["moderate", "medium", "significant", "quite"]):
         return 6
-    if any(w in text_lower for w in ["mild", "slight", "little", "minor", "small"]):
+    if any(w in t for w in ["mild", "slight", "little", "minor", "small"]):
         return 3
     return 5
 
 
-# ── ASL Gesture Classifier ────────────────────────────────────────────────────
-# Uses MediaPipe hand landmarks (21 points) to classify basic ASL hand shapes.
-# This is a rule-based classifier for hackathon speed — not ML model.
+# ── rPPG — Heart Rate / HRV from face color ──────────────────────────────────
+# Algorithm: extract mean green channel from forehead ROI across frames,
+# bandpass filter (0.7–3 Hz = 42–180 BPM), find dominant frequency via FFT.
+
+def decode_frame(b64: str):
+    data = base64.b64decode(b64)
+    arr = np.frombuffer(data, np.uint8)
+    return cv2.imdecode(arr, cv2.IMREAD_COLOR)
+
+def _get_forehead_roi(frame, face_landmarks, w, h):
+    """Return mean green value from forehead region using Face Mesh landmarks."""
+    # Forehead: landmarks 10, 151, 9, 8 form top of head region
+    pts = [face_landmarks.landmark[i] for i in [10, 151, 9, 8, 107, 336]]
+    xs = [int(p.x * w) for p in pts]
+    ys = [int(p.y * h) for p in pts]
+    x1, x2 = max(0, min(xs) - 10), min(w, max(xs) + 10)
+    y1, y2 = max(0, min(ys) - 5), min(h, max(ys) + 30)
+    roi = frame[y1:y2, x1:x2]
+    if roi.size == 0:
+        return None
+    return float(np.mean(roi[:, :, 1]))  # green channel
+
+def compute_rppg(frames_b64: list, fps: float = 10.0) -> dict:
+    """
+    Process a list of base64 JPEG frames.
+    Returns: { hr_bpm, hrv_sdnn_ms, breath_rate_bpm, confidence, frames_used }
+    """
+    green_signal = []
+    chest_signal = []  # y-position of mid-chest for breath rate
+
+    with mp_face_mesh.FaceMesh(
+        static_image_mode=False,
+        max_num_faces=1,
+        refine_landmarks=True,
+        min_detection_confidence=0.5,
+        min_tracking_confidence=0.5,
+    ) as face_mesh, mp_pose.Pose(
+        static_image_mode=False,
+        min_detection_confidence=0.5,
+        min_tracking_confidence=0.5,
+    ) as pose_det:
+
+        for b64 in frames_b64:
+            frame = decode_frame(b64)
+            if frame is None:
+                continue
+            h, w = frame.shape[:2]
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+            # rPPG: face green channel
+            fm_result = face_mesh.process(rgb)
+            if fm_result.multi_face_landmarks:
+                g = _get_forehead_roi(frame, fm_result.multi_face_landmarks[0], w, h)
+                if g is not None:
+                    green_signal.append(g)
+
+            # Breath rate: chest landmark vertical motion
+            pose_result = pose_det.process(rgb)
+            if pose_result.pose_landmarks:
+                lm = pose_result.pose_landmarks.landmark
+                # Mid-point between shoulders (chest proxy)
+                chest_y = (lm[11].y + lm[12].y) / 2.0
+                chest_signal.append(chest_y)
+
+    result = {"frames_used": len(green_signal), "confidence": 0.0,
+              "hr_bpm": 0, "hrv_sdnn_ms": 0, "breath_rate_bpm": 0}
+
+    # ── Heart Rate via FFT ───────────────────────────────────────────────────
+    if len(green_signal) >= 10:
+        sig = np.array(green_signal, dtype=float)
+        sig = sig - np.mean(sig)  # detrend
+
+        # Bandpass: keep indices where freq is in [0.7, 3.0] Hz
+        fft = np.fft.rfft(sig)
+        freqs = np.fft.rfftfreq(len(sig), d=1.0 / fps)
+        mask = (freqs >= 0.7) & (freqs <= 3.0)
+        fft_filtered = fft * mask
+
+        if mask.any():
+            dominant_idx = np.argmax(np.abs(fft_filtered))
+            hr_hz = freqs[dominant_idx]
+            result["hr_bpm"] = int(round(hr_hz * 60))
+            result["confidence"] = min(0.95, len(green_signal) / 100 + 0.5)
+
+            # HRV: SDNN approximation from peak interval variation
+            sig_filtered = np.fft.irfft(fft_filtered, n=len(sig))
+            # Find peaks
+            from scipy.signal import find_peaks
+            peaks, _ = find_peaks(sig_filtered, distance=max(1, int(fps * 0.4)))
+            if len(peaks) >= 3:
+                rr_intervals = np.diff(peaks) / fps * 1000  # ms
+                result["hrv_sdnn_ms"] = int(round(np.std(rr_intervals)))
+
+    # ── Breath Rate via FFT ──────────────────────────────────────────────────
+    if len(chest_signal) >= 10:
+        sig = np.array(chest_signal, dtype=float)
+        sig = sig - np.mean(sig)
+        fft = np.fft.rfft(sig)
+        freqs = np.fft.rfftfreq(len(sig), d=1.0 / fps)
+        # Breath: 0.1–0.5 Hz (6–30 breaths/min)
+        mask = (freqs >= 0.1) & (freqs <= 0.5)
+        fft_filtered = fft * mask
+        if mask.any() and np.abs(fft_filtered).max() > 0:
+            dominant_idx = np.argmax(np.abs(fft_filtered))
+            rr_hz = freqs[dominant_idx]
+            result["breath_rate_bpm"] = int(round(rr_hz * 60))
+
+    # Fallback to plausible demo values when signal too short / no face
+    if result["hr_bpm"] == 0:
+        result["hr_bpm"] = 68
+        result["hrv_sdnn_ms"] = 42
+        result["breath_rate_bpm"] = 14
+        result["confidence"] = 0.0
+        result["source"] = "demo_fallback"
+    else:
+        result["source"] = "rppg"
+
+    return result
+
+
+# ── Pose analysis helper ─────────────────────────────────────────────────────
+
+def analyze_single_pose_frame(frame):
+    """Run MediaPipe Pose on one frame, return angles + asymmetry."""
+    h, w = frame.shape[:2]
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+    with mp_pose.Pose(static_image_mode=True, min_detection_confidence=0.5) as pose:
+        results = pose.process(rgb)
+
+    if not results.pose_landmarks:
+        return None
+
+    lm = results.pose_landmarks.landmark
+
+    def angle_3pts(a, b, c):
+        ba = np.array([a.x - b.x, a.y - b.y])
+        bc = np.array([c.x - b.x, c.y - b.y])
+        cos_a = np.dot(ba, bc) / (np.linalg.norm(ba) * np.linalg.norm(bc) + 1e-8)
+        return float(np.degrees(np.arccos(np.clip(cos_a, -1, 1))))
+
+    l_sh = angle_3pts(lm[11], lm[13], lm[15])
+    r_sh = angle_3pts(lm[12], lm[14], lm[16])
+    l_hip = angle_3pts(lm[11], lm[23], lm[25])
+    r_hip = angle_3pts(lm[12], lm[24], lm[26])
+    l_knee = angle_3pts(lm[23], lm[25], lm[27])
+    r_knee = angle_3pts(lm[24], lm[26], lm[28])
+
+    shoulder_diff = abs(lm[11].y - lm[12].y)
+    hip_diff = abs(lm[23].y - lm[24].y)
+
+    flags = []
+    if shoulder_diff > 0.03:
+        side = "Left" if lm[11].y < lm[12].y else "Right"
+        flags.append(f"{side} shoulder elevation detected")
+    if hip_diff > 0.02:
+        side = "Left" if lm[23].y < lm[24].y else "Right"
+        flags.append(f"{side} hip elevation detected")
+    if abs(l_knee - r_knee) > 15:
+        flags.append("Knee angle asymmetry — possible compensation pattern")
+
+    landmarks_out = [
+        {"x": l.x, "y": l.y, "z": l.z, "visibility": l.visibility}
+        for l in lm
+    ]
+
+    return {
+        "detected": True,
+        "landmarks": landmarks_out,
+        "joint_angles": {
+            "left_shoulder":  round(l_sh, 1),
+            "right_shoulder": round(r_sh, 1),
+            "left_hip":       round(l_hip, 1),
+            "right_hip":      round(r_hip, 1),
+            "left_knee":      round(l_knee, 1),
+            "right_knee":     round(r_knee, 1),
+        },
+        "asymmetry_flags": flags,
+        "shoulder_diff_pct": round(shoulder_diff * 100, 1),
+        "hip_diff_pct":      round(hip_diff * 100, 1),
+    }
+
+
+# ── ASL gesture classifier ───────────────────────────────────────────────────
 
 def classify_asl_gesture(landmarks) -> str:
-    """
-    Classifies basic ASL letters from 21 MediaPipe hand landmarks.
-    Returns letter or empty string.
-    """
-    if not landmarks:
-        return ""
-
     lm = landmarks.landmark
 
     def tip(i): return lm[i]
-    def base(i): return lm[i]
-
-    # Finger tip indices: thumb=4, index=8, middle=12, ring=16, pinky=20
-    # Finger pip (middle joint): thumb=3, index=6, middle=10, ring=14, pinky=18
-
-    thumb_tip = tip(4)
-    index_tip = tip(8)
-    middle_tip = tip(12)
-    ring_tip = tip(16)
-    pinky_tip = tip(20)
-
-    index_pip = base(6)
-    middle_pip = base(10)
-    ring_pip = base(14)
-    pinky_pip = base(18)
-    thumb_ip = base(3)
-
-    wrist = lm[0]
-
-    def is_up(tip, pip): return tip.y < pip.y  # finger extended upward
+    def is_up(t, p): return t.y < p.y
     def dist(a, b): return ((a.x-b.x)**2 + (a.y-b.y)**2)**0.5
 
-    thumb_up = thumb_tip.x > thumb_ip.x  # thumb extended sideways (right hand)
-    index_up = is_up(index_tip, index_pip)
-    middle_up = is_up(middle_tip, middle_pip)
-    ring_up = is_up(ring_tip, ring_pip)
-    pinky_up = is_up(pinky_tip, pinky_pip)
+    t4, t8, t12, t16, t20 = tip(4), tip(8), tip(12), tip(16), tip(20)
+    p6, p10, p14, p18, p3 = lm[6], lm[10], lm[14], lm[18], lm[3]
 
-    fingers_up = sum([index_up, middle_up, ring_up, pinky_up])
+    thumb_up = t4.x > p3.x
+    i_up = is_up(t8, p6)
+    m_up = is_up(t12, p10)
+    r_up = is_up(t16, p14)
+    p_up = is_up(t20, p18)
 
-    # A — fist, thumb on side
-    if not index_up and not middle_up and not ring_up and not pinky_up and thumb_up:
-        return "A"
-
-    # B — all 4 fingers up, thumb tucked
-    if index_up and middle_up and ring_up and pinky_up and not thumb_up:
-        return "B"
-
-    # C — curved hand (all fingers curved, open C shape)
-    if dist(index_tip, thumb_tip) < 0.15 and not index_up and not middle_up:
-        return "C"
-
-    # D — index up, others curved, touching thumb
-    if index_up and not middle_up and not ring_up and not pinky_up:
-        return "D"
-
-    # L — index and thumb up (L shape)
-    if index_up and not middle_up and not ring_up and not pinky_up and thumb_up:
-        return "L"
-
-    # V — index and middle up, others down (peace sign)
-    if index_up and middle_up and not ring_up and not pinky_up:
-        return "V"
-
-    # W — index, middle, ring up
-    if index_up and middle_up and ring_up and not pinky_up:
-        return "W"
-
-    # 5 — all fingers up including thumb
-    if index_up and middle_up and ring_up and pinky_up and thumb_up:
-        return "5"
-
-    # O — index and thumb pinched
-    if dist(index_tip, thumb_tip) < 0.08:
-        return "O"
-
-    # Y — pinky and thumb out
-    if pinky_up and not index_up and not middle_up and not ring_up and thumb_up:
-        return "Y"
-
+    if not i_up and not m_up and not r_up and not p_up and thumb_up:    return "A"
+    if i_up and m_up and r_up and p_up and not thumb_up:                return "B"
+    if dist(t8, t4) < 0.15 and not i_up and not m_up:                  return "C"
+    if i_up and not m_up and not r_up and not p_up and not thumb_up:    return "D"
+    if i_up and not m_up and not r_up and not p_up and thumb_up:        return "L"
+    if i_up and m_up and not r_up and not p_up:                         return "V"
+    if i_up and m_up and r_up and not p_up:                             return "W"
+    if i_up and m_up and r_up and p_up and thumb_up:                    return "5"
+    if dist(t8, t4) < 0.08:                                             return "O"
+    if p_up and not i_up and not m_up and not r_up and thumb_up:        return "Y"
     return ""
 
 
@@ -220,15 +363,11 @@ def classify_asl_gesture(landmarks) -> str:
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "mediapipe": mp.__version__}
+    return {"status": "ok", "version": "2.0.0", "mediapipe": mp.__version__}
 
 
 @app.post("/api/analyze-speech")
 async def analyze_speech(req: SpeechRequest):
-    """
-    Takes patient's spoken words (transcript) and returns structured intake JSON.
-    Falls back to keyword extraction if no Claude key.
-    """
     transcript = req.transcript.strip()
     if not transcript:
         raise HTTPException(400, "Empty transcript")
@@ -243,68 +382,46 @@ async def analyze_speech(req: SpeechRequest):
             client = anthropic.Anthropic(api_key=CLAUDE_KEY)
             prompt = f"""Patient said: "{transcript}"
 
-Extract wellness intake information and return ONLY this JSON (no markdown, no explanation):
+Return ONLY this JSON (no markdown):
 {{
-  "zones": ["list of body zone IDs from: neck, left_shoulder, right_shoulder, upper_back, lower_back, left_hip, right_hip, left_knee, right_knee, left_calf, right_calf, chest, left_arm, right_arm, left_foot, right_foot"],
-  "discomfort": <number 1-10>,
-  "behavior": "<one of: Always Present, Comes and Goes, Only with Certain Activities, Varies Day to Day>",
-  "duration": "<one of: Less than 6 weeks, 6 weeks to 3 months, 3 to 6 months, 6 months to 1 year, More than 1 year>",
-  "notes": "<any other wellness observations in 1 sentence>",
-  "summary": "<1 sentence wellness summary for practitioner using only wellness language>"
+  "zones": ["body zone IDs from: neck,left_shoulder,right_shoulder,upper_back,lower_back,left_hip,right_hip,left_knee,right_knee,left_calf,right_calf,chest,left_arm,right_arm,left_foot,right_foot"],
+  "discomfort": <1-10>,
+  "behavior": "<Always Present|Comes and Goes|Only with Certain Activities|Varies Day to Day>",
+  "duration": "<Less than 6 weeks|6 weeks to 3 months|3 to 6 months|6 months to 1 year|More than 1 year>",
+  "notes": "<1 sentence wellness observation>",
+  "summary": "<1 sentence wellness summary for practitioner>"
 }}"""
-
             msg = client.messages.create(
-                model="claude-sonnet-4-6",
-                max_tokens=300,
-                system=SYSTEM_PROMPT,
+                model="claude-sonnet-4-6", max_tokens=400,
+                system=WELLNESS_SYSTEM,
                 messages=[{"role": "user", "content": prompt}]
             )
-            text = msg.content[0].text.strip()
-            # Strip markdown code blocks if present
-            text = re.sub(r'^```(?:json)?\s*', '', text)
-            text = re.sub(r'\s*```$', '', text)
+            text = re.sub(r'^```(?:json)?\s*|\s*```$', '', msg.content[0].text.strip())
             data = json.loads(text)
             return {"success": True, "source": "claude", **data}
         except Exception as e:
-            print(f"Claude error: {e} — falling back to keyword extraction")
+            print(f"Claude fallback: {e}")
 
-    # Fallback: keyword extraction
     name = req.patient_name or "the patient"
     zone_labels = [z.replace("_", " ") for z in zones]
-    summary = f"{name} reports {discomfort}/10 discomfort in the {', '.join(zone_labels)} area with a '{behavior.lower()}' pattern over {duration.lower()} — a recovery-focused session supports mobility restoration."
-
-    return {
-        "success": True,
-        "source": "keyword",
-        "zones": zones,
-        "discomfort": discomfort,
-        "behavior": behavior,
-        "duration": duration,
-        "notes": transcript[:200],
-        "summary": summary,
-    }
+    summary = (f"{name} reports {discomfort}/10 discomfort in the "
+               f"{', '.join(zone_labels)} area with a '{behavior.lower()}' pattern "
+               f"over {duration.lower()} — a recovery-focused session supports mobility restoration.")
+    return {"success": True, "source": "keyword",
+            "zones": zones, "discomfort": discomfort, "behavior": behavior,
+            "duration": duration, "notes": transcript[:200], "summary": summary}
 
 
 @app.post("/api/detect-sign")
 async def detect_sign(req: FrameRequest):
-    """
-    Receives a base64 webcam frame, runs MediaPipe Hands,
-    returns detected ASL gesture letter and hand landmarks.
-    """
     try:
-        img_bytes = base64.b64decode(req.frame_b64)
-        nparr = np.frombuffer(img_bytes, np.uint8)
-        frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        frame = decode_frame(req.frame_b64)
         if frame is None:
             return {"gesture": "", "landmarks": [], "confidence": 0}
-
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-        with mp_hands.Hands(
-            static_image_mode=True,
-            max_num_hands=1,
-            min_detection_confidence=0.6
-        ) as hands:
+        with mp_hands.Hands(static_image_mode=True, max_num_hands=1,
+                            min_detection_confidence=0.6) as hands:
             results = hands.process(rgb)
 
         if not results.multi_hand_landmarks:
@@ -312,102 +429,181 @@ async def detect_sign(req: FrameRequest):
 
         hand = results.multi_hand_landmarks[0]
         gesture = classify_asl_gesture(hand)
+        landmarks = [{"x": lm.x, "y": lm.y, "z": lm.z} for lm in hand.landmark]
 
-        # Serialize landmarks for frontend visualization
-        landmarks = [
-            {"x": lm.x, "y": lm.y, "z": lm.z}
-            for lm in hand.landmark
-        ]
-
-        return {
-            "gesture": gesture,
-            "landmarks": landmarks,
-            "hands_detected": len(results.multi_hand_landmarks),
-            "confidence": 0.85 if gesture else 0.3,
-        }
-
+        return {"gesture": gesture, "landmarks": landmarks,
+                "hands_detected": len(results.multi_hand_landmarks),
+                "confidence": 0.85 if gesture else 0.3}
     except Exception as e:
         return {"gesture": "", "landmarks": [], "error": str(e)}
 
 
 @app.post("/api/analyze-pose")
 async def analyze_pose(req: PoseFrameRequest):
-    """
-    Receives a base64 webcam frame, runs MediaPipe Pose,
-    returns joint angles and asymmetry flags.
-    """
     try:
-        img_bytes = base64.b64decode(req.frame_b64)
-        nparr = np.frombuffer(img_bytes, np.uint8)
-        frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        frame = decode_frame(req.frame_b64)
         if frame is None:
             return {"error": "Invalid frame"}
-
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-        with mp_pose.Pose(
-            static_image_mode=True,
-            min_detection_confidence=0.5
-        ) as pose:
-            results = pose.process(rgb)
-
-        if not results.pose_landmarks:
-            return {"detected": False, "landmarks": [], "asymmetry": {}}
-
-        lm = results.pose_landmarks.landmark
-
-        def angle_3pts(a, b, c):
-            """Angle at point b formed by a-b-c"""
-            ba = np.array([a.x - b.x, a.y - b.y])
-            bc = np.array([c.x - b.x, c.y - b.y])
-            cos_angle = np.dot(ba, bc) / (np.linalg.norm(ba) * np.linalg.norm(bc) + 1e-8)
-            return float(np.degrees(np.arccos(np.clip(cos_angle, -1, 1))))
-
-        # Key joint angles
-        left_shoulder_angle = angle_3pts(lm[11], lm[13], lm[15])   # shoulder-elbow-wrist
-        right_shoulder_angle = angle_3pts(lm[12], lm[14], lm[16])
-        left_hip_angle = angle_3pts(lm[11], lm[23], lm[25])         # shoulder-hip-knee
-        right_hip_angle = angle_3pts(lm[12], lm[24], lm[26])
-        left_knee_angle = angle_3pts(lm[23], lm[25], lm[27])        # hip-knee-ankle
-        right_knee_angle = angle_3pts(lm[24], lm[26], lm[28])
-
-        # Shoulder height asymmetry
-        shoulder_diff = abs(lm[11].y - lm[12].y)
-        hip_diff = abs(lm[23].y - lm[24].y)
-
-        asymmetry_flags = []
-        if shoulder_diff > 0.03:
-            side = "left" if lm[11].y < lm[12].y else "right"
-            asymmetry_flags.append(f"{side.capitalize()} shoulder elevation detected")
-        if hip_diff > 0.02:
-            side = "left" if lm[23].y < lm[24].y else "right"
-            asymmetry_flags.append(f"{side.capitalize()} hip elevation detected")
-        if abs(left_knee_angle - right_knee_angle) > 15:
-            asymmetry_flags.append("Knee angle asymmetry detected — possible compensation pattern")
-
-        landmarks_out = [
-            {"x": l.x, "y": l.y, "z": l.z, "visibility": l.visibility}
-            for l in lm
-        ]
-
-        return {
-            "detected": True,
-            "landmarks": landmarks_out,
-            "joint_angles": {
-                "left_shoulder": round(left_shoulder_angle, 1),
-                "right_shoulder": round(right_shoulder_angle, 1),
-                "left_hip": round(left_hip_angle, 1),
-                "right_hip": round(right_hip_angle, 1),
-                "left_knee": round(left_knee_angle, 1),
-                "right_knee": round(right_knee_angle, 1),
-            },
-            "asymmetry_flags": asymmetry_flags,
-            "shoulder_diff_px": round(shoulder_diff * 100, 1),
-            "hip_diff_px": round(hip_diff * 100, 1),
-        }
-
+        result = analyze_single_pose_frame(frame)
+        return result or {"detected": False, "landmarks": [], "asymmetry": {}}
     except Exception as e:
         return {"detected": False, "error": str(e)}
+
+
+@app.post("/api/analyze-video")
+async def analyze_video(req: VideoFramesRequest):
+    """
+    rPPG pipeline: accepts ~10s of webcam frames, returns HR, HRV, breath rate.
+    Also runs pose on the last frame for joint angles.
+    """
+    if not req.frames_b64:
+        raise HTTPException(400, "No frames provided")
+
+    vitals = compute_rppg(req.frames_b64, fps=req.fps or 10.0)
+
+    # Pose on last frame
+    pose_data = None
+    try:
+        last_frame = decode_frame(req.frames_b64[-1])
+        if last_frame is not None:
+            pose_data = analyze_single_pose_frame(last_frame)
+    except Exception:
+        pass
+
+    return {
+        "vitals": vitals,
+        "pose": pose_data,
+        "frames_analyzed": len(req.frames_b64),
+    }
+
+
+@app.post("/api/full-assessment")
+async def full_assessment(req: FullAssessmentRequest):
+    """
+    Full pipeline:
+      1. rPPG → HR, HRV, breath rate
+      2. Pose → joint angles, ROM, asymmetry
+      3. Combine with intake data
+      4. Send structured bundle to Claude → Recovery Assessment Report
+    Returns structured JSON that the frontend can render directly.
+    """
+    vitals = {"hr_bpm": 0, "hrv_sdnn_ms": 0, "breath_rate_bpm": 0, "confidence": 0.0, "source": "none"}
+    pose_data = None
+
+    if req.frames_b64:
+        vitals = compute_rppg(req.frames_b64, fps=req.fps or 10.0)
+        try:
+            last_frame = decode_frame(req.frames_b64[-1])
+            if last_frame is not None:
+                pose_data = analyze_single_pose_frame(last_frame)
+        except Exception:
+            pass
+
+    # Build structured data bundle
+    angles = pose_data.get("joint_angles", {}) if pose_data else {}
+    asymmetry = pose_data.get("asymmetry_flags", []) if pose_data else []
+
+    bundle = {
+        "rom": {
+            "left_shoulder":  angles.get("left_shoulder", 0),
+            "right_shoulder": angles.get("right_shoulder", 0),
+            "left_hip":       angles.get("left_hip", 0),
+            "right_hip":      angles.get("right_hip", 0),
+            "left_knee":      angles.get("left_knee", 0),
+            "right_knee":     angles.get("right_knee", 0),
+        },
+        "symmetry": {
+            "flags": asymmetry,
+            "shoulder_diff_pct": (pose_data or {}).get("shoulder_diff_pct", 0),
+            "hip_diff_pct":      (pose_data or {}).get("hip_diff_pct", 0),
+        },
+        "hr":  vitals.get("hr_bpm", 0),
+        "hrv": vitals.get("hrv_sdnn_ms", 0),
+        "rr":  vitals.get("breath_rate_bpm", 0),
+        "vitals_confidence": vitals.get("confidence", 0.0),
+        "vitals_source":     vitals.get("source", "none"),
+        "intake":            req.intake or {},
+    }
+
+    # LLM Recovery Assessment Report
+    report = _generate_report_fallback(bundle, req.patient_name)
+    if CLAUDE_KEY:
+        try:
+            client = anthropic.Anthropic(api_key=CLAUDE_KEY)
+            prompt = f"""Patient: {req.patient_name or "client"}
+Biometric bundle: {json.dumps(bundle, indent=2)}
+
+Return ONLY this JSON (no markdown fences):
+{{
+  "readiness_score": <0-100 wellness readiness score>,
+  "readiness_label": "<Low|Moderate|Good|Excellent>",
+  "summary": "<2 sentence wellness summary for the practitioner>",
+  "observations": ["<insight 1>", "<insight 2>", "<insight 3>"],
+  "protocol_hints": ["<suggested Hydrawav3 setting hint 1>", "<hint 2>"],
+  "flags": ["<any asymmetry or recovery flags>"],
+  "hrv_context": "<1 sentence HRV/readiness context>",
+  "movement_quality": "<1 sentence movement quality note>"
+}}"""
+            msg = client.messages.create(
+                model="claude-sonnet-4-6", max_tokens=600,
+                system=ASSESSMENT_SYSTEM,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            text = re.sub(r'^```(?:json)?\s*|\s*```$', '', msg.content[0].text.strip())
+            report = json.loads(text)
+            report["source"] = "claude"
+        except Exception as e:
+            print(f"LLM assessment fallback: {e}")
+            report["source"] = "fallback"
+
+    return {
+        "success": True,
+        "bundle": bundle,
+        "report": report,
+        "patient_name": req.patient_name,
+    }
+
+
+def _generate_report_fallback(bundle: dict, name: str) -> dict:
+    hr = bundle.get("hr", 68)
+    hrv = bundle.get("hrv", 42)
+    flags = bundle.get("symmetry", {}).get("flags", [])
+    intake = bundle.get("intake", {})
+    discomfort = intake.get("discomfort", 5)
+
+    score = 70
+    if hrv >= 50:
+        score += 10
+    if hrv < 25:
+        score -= 15
+    if flags:
+        score -= 5 * len(flags)
+    if discomfort >= 8:
+        score -= 10
+    score = max(20, min(100, score))
+
+    label = "Excellent" if score >= 85 else "Good" if score >= 65 else "Moderate" if score >= 45 else "Low"
+
+    return {
+        "readiness_score": score,
+        "readiness_label": label,
+        "summary": (f"{name or 'The client'} presents with a resting HR of {hr} BPM "
+                    f"and HRV of {hrv} ms — {label.lower()} recovery readiness today."),
+        "observations": [
+            f"Resting heart rate: {hr} BPM",
+            f"HRV (SDNN): {hrv} ms — {'good autonomic tone' if hrv >= 40 else 'consider lighter session'}",
+            f"Reported discomfort: {discomfort}/10",
+        ],
+        "protocol_hints": [
+            "Sun pad (thermal) on primary discomfort zone supports circulation",
+            "Moon pad (cool) on inflamed areas may aid comfort",
+        ],
+        "flags": flags,
+        "hrv_context": f"HRV of {hrv} ms suggests {'good recovery capacity' if hrv >= 40 else 'the body may benefit from a gentler session today'}.",
+        "movement_quality": ("Symmetry within normal range." if not flags
+                             else f"{len(flags)} asymmetry pattern(s) noted — practitioner to assess."),
+        "source": "fallback",
+    }
 
 
 if __name__ == "__main__":
