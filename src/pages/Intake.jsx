@@ -21,6 +21,8 @@ import {
   speakText,
 } from '../services/api';
 import Body3D from '../components/Body3D';
+import CameraAssessment from '../components/CameraAssessment';
+import VoiceIntake from '../components/VoiceIntake';
 
 const BEHAVIORS = ['Always Present', 'Comes and Goes', 'Only with Certain Activities', 'Varies Day to Day'];
 const DURATIONS = ['Less than 6 weeks', '6 weeks to 3 months', '3 to 6 months', '6 months to 1 year', 'More than 1 year'];
@@ -71,8 +73,26 @@ export default function Intake() {
   const [elevenKey, setElevenKey] = useState('');
   const [speakingBrief, setSpeakingBrief] = useState(false);
   const [contraAcknowledged, setContraAcknowledged] = useState(false);
+  const [showCamera, setShowCamera] = useState(false);
+  const [showVoice, setShowVoice] = useState(false);
 
   const hasContraindication = selectedZones.some((zone) => CONTRAINDICATION_ZONES.includes(zone));
+
+  function handleCameraAssessment(data) {
+    const v = data?.vitals;
+    if (v?.hrv_sdnn_ms && v.hrv_sdnn_ms > 0) setHrv(String(v.hrv_sdnn_ms));
+    setShowCamera(false);
+  }
+
+  function handleVoiceIntakeComplete(data) {
+    if (data?.zones?.length) setSelectedZones(data.zones);
+    if (data?.discomfort) {
+      const zone = data.zones?.[0];
+      if (zone) setZoneDetails(prev => ({ ...prev, [zone]: { discomfort: data.discomfort, behavior: data.behavior || BEHAVIORS[1], duration: data.duration || DURATIONS[2] } }));
+    }
+    if (data?.notes) setNotes(data.notes);
+    setShowVoice(false);
+  }
 
   function toggleZone(zoneId) {
     setSelectedZones((previous) =>
@@ -275,6 +295,41 @@ export default function Intake() {
           </article>
 
           <div className="space-y-6">
+            {/* AI intake tools toggle bar */}
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={() => { setShowVoice(v => !v); setShowCamera(false); }}
+                className={`flex-1 rounded-full border py-2.5 text-sm font-semibold transition-all ${showVoice ? 'border-sky-400 bg-sky-50 text-sky-700' : 'border-slate-200 text-slate-600 hover:border-slate-300'}`}
+              >
+                🎙 Voice Intake
+              </button>
+              <button
+                type="button"
+                onClick={() => { setShowCamera(c => !c); setShowVoice(false); }}
+                className={`flex-1 rounded-full border py-2.5 text-sm font-semibold transition-all ${showCamera ? 'border-sky-400 bg-sky-50 text-sky-700' : 'border-slate-200 text-slate-600 hover:border-slate-300'}`}
+              >
+                📷 Biometric Scan
+              </button>
+            </div>
+
+            {showVoice && (
+              <VoiceIntake
+                patientName={patientName}
+                elevenKey={elevenKey}
+                onIntakeComplete={handleVoiceIntakeComplete}
+                onClose={() => setShowVoice(false)}
+              />
+            )}
+
+            {showCamera && (
+              <CameraAssessment
+                patientName={patientName}
+                onAssessmentComplete={handleCameraAssessment}
+                onClose={() => setShowCamera(false)}
+              />
+            )}
+
             <article className="riq-card px-5 py-5 sm:px-6">
               <div className="riq-eyebrow mb-4">Patient context</div>
               <div className="space-y-4">
