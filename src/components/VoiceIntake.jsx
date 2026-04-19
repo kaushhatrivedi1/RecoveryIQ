@@ -97,13 +97,34 @@ async function speakQuestion(text, elevenKey) {
     } catch { /* fall through */ }
   }
 
-  // Browser TTS — just speak, no cancel, no delays
+  // Browser TTS
   return new Promise(resolve => {
+    const ss = window.speechSynthesis;
+
+    // Chrome gets stuck in paused state — always resume first
+    if (ss.paused) ss.resume();
+
     const utter = new SpeechSynthesisUtterance(text);
     utter.rate = 0.9;
     utter.onend = resolve;
     utter.onerror = resolve;
-    window.speechSynthesis.speak(utter);
+
+    // Pick an English voice explicitly — Chrome silently skips if default voice not ready
+    const voices = ss.getVoices();
+    const en = voices.find(v => v.lang.startsWith('en') && v.localService)
+            || voices.find(v => v.lang.startsWith('en'))
+            || voices[0];
+    if (en) utter.voice = en;
+
+    ss.speak(utter);
+
+    // Chrome macOS bug: long utterances pause silently — keep resuming
+    const keepAlive = setInterval(() => {
+      if (ss.paused) ss.resume();
+      if (!ss.speaking) clearInterval(keepAlive);
+    }, 5000);
+    utter.onend = () => { clearInterval(keepAlive); resolve(); };
+    utter.onerror = () => { clearInterval(keepAlive); resolve(); };
   });
 }
 
