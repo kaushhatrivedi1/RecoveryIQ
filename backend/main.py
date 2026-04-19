@@ -25,13 +25,25 @@ from typing import List, Optional
 
 import anthropic
 import cv2
-import mediapipe as mp
+
 import numpy as np
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from rom_reference import ROMReference
+try:
+    import mediapipe as mp
+    mp_hands = mp.solutions.hands
+    mp_pose = mp.solutions.pose
+    mp_face_mesh = mp.solutions.face_mesh
+    MEDIAPIPE_OK = True
+except Exception:
+    mp_hands = None
+    mp_pose = None
+    mp_face_mesh = None
+    MEDIAPIPE_OK = False
+    print("WARNING: MediaPipe unavailable — CV endpoints will return fallback data")
 
 app = FastAPI(title="RecoveryIQ Backend", version="2.1.0")
 
@@ -42,9 +54,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-mp_hands = mp.solutions.hands
-mp_pose = mp.solutions.pose
-mp_face_mesh = mp.solutions.face_mesh
 rom_reference = ROMReference()
 
 CLAUDE_KEY = os.getenv("CLAUDE_KEY", "")
@@ -631,6 +640,8 @@ def analyze_single_pose_frame(frame):
     """Run MediaPipe Pose on one frame, return angles + asymmetry.
     Angles are only computed when all contributing landmarks meet VIS_MIN."""
     h, w = frame.shape[:2]
+    if not MEDIAPIPE_OK:
+        return None
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
     with mp_pose.Pose(static_image_mode=True, min_detection_confidence=0.5) as pose:
@@ -874,7 +885,7 @@ def classify_asl_gesture(landmarks) -> str:
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "2.0.0", "mediapipe": mp.__version__}
+    return {"status": "ok", "version": "2.0.0", "mediapipe": str(mp.__version__) if MEDIAPIPE_OK else "unavailable"}
 
 
 @app.get("/api/clients")
@@ -1143,7 +1154,8 @@ async def analyze_video(req: VideoFramesRequest):
         raise HTTPException(400, "No frames provided")
 
     vitals = compute_rppg(req.frames_b64, fps=req.fps or 10.0)
-
+    if not MEDIAPIPE_OK:
+        return {"hr_bpm": 68, "hrv_sdnn_ms": 42, "breath_rate_bpm": 14, "confidence": 0.0, "source": "demo_fallback"}
     # Pose on last frame
     pose_data = None
     try:

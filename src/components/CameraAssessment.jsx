@@ -1,8 +1,3 @@
-/**
- * CameraAssessment — live camera component that captures ~10s of frames,
- * sends to /api/analyze-video (rPPG + pose) and renders the vitals + movement quality.
- * Used on the Intake page for pre-session biometric scan.
- */
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { Camera, CameraOff, Activity, Heart, Wind, Zap, CheckCircle } from 'lucide-react';
 
@@ -17,7 +12,7 @@ export default function CameraAssessment({ patientName, onAssessmentComplete, on
   const streamRef = useRef(null);
   const intervalRef = useRef(null);
 
-  const [phase, setPhase] = useState('idle'); // idle | starting | capturing | analyzing | done | error
+  const [phase, setPhase] = useState('idle');
   const [progress, setProgress] = useState(0);
   const [result, setResult] = useState(null);
   const [errorMsg, setErrorMsg] = useState('');
@@ -41,6 +36,22 @@ export default function CameraAssessment({ patientName, onAssessmentComplete, on
         audio: false,
       });
       streamRef.current = stream;
+
+      // Lock exposure and white balance for stable rPPG signal
+      const track = stream.getVideoTracks()[0];
+      try {
+        await track.applyConstraints({
+          advanced: [{
+            exposureMode: 'manual',
+            exposureTime: 156,
+            whiteBalanceMode: 'manual',
+            colorTemperature: 4000,
+          }]
+        });
+      } catch {
+        // camera doesn't support these constraints, continue anyway
+      }
+
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
@@ -90,7 +101,6 @@ export default function CameraAssessment({ patientName, onAssessmentComplete, on
       setPhase('done');
       if (onAssessmentComplete) onAssessmentComplete(data);
     } catch {
-      // Demo fallback
       const demo = {
         vitals: { hr_bpm: 68, hrv_sdnn_ms: 44, breath_rate_bpm: 14, confidence: 0, source: 'demo_fallback' },
         pose: null,
@@ -116,7 +126,6 @@ export default function CameraAssessment({ patientName, onAssessmentComplete, on
 
   return (
     <div className="riq-card overflow-hidden">
-      {/* Header */}
       <div className="flex items-center justify-between border-b border-slate-200 bg-gradient-to-r from-sky-100 via-cyan-50 to-transparent px-6 py-4">
         <div className="flex items-center gap-2">
           <div className={`w-2.5 h-2.5 rounded-full ${phase === 'capturing' ? 'bg-rose-500 animate-pulse' : phase === 'done' ? 'bg-emerald-500' : 'bg-slate-300'}`} />

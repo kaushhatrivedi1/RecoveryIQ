@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Activity,
   Brain,
@@ -36,11 +36,11 @@ import {
   PROTOCOLS,
   SESSION_GOALS,
 } from '../data/mockData';
-
+import { VoicePanel } from './VoiceAndASL';
 // ── Progress tracking (localStorage) ────────────────────────────────────────
 const PROGRESS_KEY = (name) => `riq_progress_${(name || 'guest').toLowerCase().replace(/\s+/g, '_')}`;
 
-function saveProgressSnapshot(patientName, assessmentData, measuredAngles) {
+function _saveProgressSnapshot(patientName, assessmentData, measuredAngles) {
   if (!measuredAngles || !Object.keys(measuredAngles).length) return;
   try {
     const key = PROGRESS_KEY(patientName);
@@ -60,7 +60,7 @@ function saveProgressSnapshot(patientName, assessmentData, measuredAngles) {
   }
 }
 
-function loadProgressHistory(patientName) {
+function _loadProgressHistory(patientName) {
   try {
     const key = PROGRESS_KEY(patientName);
     return JSON.parse(localStorage.getItem(key) || '[]');
@@ -383,7 +383,7 @@ function extractMeasuredAngles(romFindings) {
 function deriveAnalysis(assessmentData, planData, variant = 1) {
   const zoneLabels = (assessmentData?.zones || []).map(zoneName);
   const romFindings = assessmentData?.romFindings || [];
-  const notes = assessmentData?.notes || '';
+  const _notes = assessmentData?.notes || '';
   const hasTrunkRotation = romFindings.some((item) => item.test === 'trunk_rotation');
   const hasMidBack = zoneLabels.some((label) => /mid back|upper back|lower back/i.test(label));
   const hasHip = zoneLabels.some((label) => /hip/i.test(label));
@@ -888,7 +888,7 @@ export default function SessionPlan({
     return options.find((option) => option.option === (placements[zoneId] || options[0]?.option || 1));
   }
 
-  const visiblePlacementZones = selectedZones.filter((zoneId) => PAD_PLACEMENT_MAP[zoneId]);
+  const _visiblePlacementZones = selectedZones.filter((zoneId) => PAD_PLACEMENT_MAP[zoneId]);
   const displayMarkers = activePadZone
     ? buildPlacementMarkers(
         activePadZone,
@@ -924,10 +924,19 @@ export default function SessionPlan({
         </div>
 
         {expanded ? (
-          <div className="border-t border-[#F3F4F6] px-6 py-6">
-            <MovementIntelligencePanel innovation={planData?.innovation} />
+  <div className="border-t border-[#F3F4F6] px-6 py-6">
+    <MovementIntelligencePanel innovation={planData?.innovation} />
 
-            <div className="mb-5 flex flex-wrap gap-2 border-b border-[#ECEFF4] pb-3">
+    {planData?.session_focus && (
+      <div className="mb-5">
+        <VoicePanel
+          text={`${planData.session_focus}. ${planData.analysis_1 || ''}`}
+          label="Read Session Brief"
+        />
+      </div>
+    )}
+
+    <div className="mb-5 flex flex-wrap gap-2 border-b border-[#ECEFF4] pb-3">
               {TABS.map(({ id, label, Icon }) => (
                 <button
                   key={id}
