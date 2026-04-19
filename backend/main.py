@@ -13,10 +13,12 @@ import base64
 import json
 import os
 import re
+import sqlite3
 import subprocess
 import tempfile
 import time
 from collections import deque
+from datetime import datetime, timedelta
 from typing import List, Optional
 
 import anthropic
@@ -44,6 +46,7 @@ mp_face_mesh = mp.solutions.face_mesh
 rom_reference = ROMReference()
 
 CLAUDE_KEY = os.getenv("CLAUDE_KEY", "")
+DB_PATH = os.path.join(os.path.dirname(__file__), "recoveryiq.db")
 
 WELLNESS_SYSTEM = """You are a wellness recovery assistant for Hydrawav3.
 Use only wellness language: supports, recovery, mobility, restoration, balance.
@@ -88,6 +91,220 @@ class FullAssessmentRequest(BaseModel):
 
 class TTSRequest(BaseModel):
     text: str
+
+
+class ClientCreateRequest(BaseModel):
+    name: str
+    age: Optional[int] = None
+    condition: Optional[str] = ""
+
+
+class ClientScoreRequest(BaseModel):
+    score: int
+    check_in: Optional[str] = None
+    streak: Optional[int] = 0
+    xp: Optional[int] = 0
+
+
+class ClientSessionRequest(BaseModel):
+    protocol: str
+    duration: int
+    zones: Optional[List[str]] = []
+    before_score: Optional[int] = 0
+    after_score: Optional[int] = 0
+    date: Optional[str] = None
+
+
+def get_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def serialize_client_row(row):
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "age": row["age"],
+        "dob": row["dob"],
+        "condition": row["condition"],
+        "practitioner_id": row["practitioner_id"],
+        "avatar": row["avatar"],
+        "sessions": json.loads(row["sessions"] or "[]"),
+        "recovery_scores": json.loads(row["recovery_scores"] or "[]"),
+    }
+
+
+def default_recovery_scores():
+    today = time.strftime("%Y-%m-%d")
+    return [{
+        "date": today,
+        "score": 60,
+        "check_in": None,
+        "streak": 0,
+        "xp": 0,
+    }]
+
+
+def days_ago(n: int):
+    return (datetime.now() - timedelta(days=n)).strftime("%Y-%m-%d")
+
+
+def default_client_payload(name: str, age: Optional[int], condition: str, suffix: int):
+    initials = "".join([part[:1] for part in name.split()[:2]]).upper() or "CL"
+    return {
+        "id": f"client-{suffix:03d}",
+        "name": name,
+        "age": age or 35,
+        "dob": "",
+        "condition": condition or "New Client",
+        "practitioner_id": "prac-001",
+        "avatar": initials,
+        "sessions": [],
+        "recovery_scores": default_recovery_scores(),
+    }
+
+
+def demo_client_payload(name: str, age: int, condition: str, suffix: int):
+    if name == "Maria Chen":
+        return {
+            "id": f"client-{suffix:03d}",
+            "name": name,
+            "age": age,
+            "dob": "1983-06-15",
+            "condition": condition,
+            "practitioner_id": "prac-001",
+            "avatar": "MC",
+            "sessions": [
+                {"id": "s1", "date": days_ago(14), "protocol": "Signature Short (Recovery & Relief)", "duration": 9, "before_score": 4, "after_score": 7, "zones": ["right_hip"]},
+                {"id": "s2", "date": days_ago(10), "protocol": "Mobility Surge", "duration": 7, "before_score": 5, "after_score": 8, "zones": ["right_hip", "lower_back"]},
+                {"id": "s3", "date": days_ago(5), "protocol": "Contrast Pulse 9", "duration": 8, "before_score": 6, "after_score": 9, "zones": ["right_hip"]},
+            ],
+            "recovery_scores": [
+                {"date": days_ago(6), "score": 58, "check_in": "okay", "streak": 1, "xp": 20},
+                {"date": days_ago(5), "score": 65, "check_in": "great", "streak": 2, "xp": 70},
+                {"date": days_ago(4), "score": 68, "check_in": "great", "streak": 3, "xp": 120},
+                {"date": days_ago(3), "score": 71, "check_in": "okay", "streak": 4, "xp": 140},
+                {"date": days_ago(2), "score": 74, "check_in": "great", "streak": 5, "xp": 190},
+                {"date": days_ago(1), "score": 76, "check_in": "great", "streak": 6, "xp": 240},
+                {"date": days_ago(0), "score": 78, "check_in": None, "streak": 6, "xp": 240},
+            ],
+        }
+    if name == "Marcus Williams":
+        return {
+            "id": f"client-{suffix:03d}",
+            "name": name,
+            "age": age,
+            "dob": "1990-03-22",
+            "condition": condition,
+            "practitioner_id": "prac-001",
+            "avatar": "MW",
+            "sessions": [
+                {"id": "s4", "date": days_ago(20), "protocol": "PolarWave 18 — \"Release\"", "duration": 4, "before_score": 3, "after_score": 6, "zones": ["left_shoulder"]},
+                {"id": "s5", "date": days_ago(12), "protocol": "Contrast Pulse 18", "duration": 4, "before_score": 4, "after_score": 6, "zones": ["left_shoulder", "neck"]},
+            ],
+            "recovery_scores": [
+                {"date": days_ago(6), "score": 62, "check_in": "great", "streak": 3, "xp": 110},
+                {"date": days_ago(5), "score": 60, "check_in": "okay", "streak": 4, "xp": 130},
+                {"date": days_ago(4), "score": 55, "check_in": "rough", "streak": 5, "xp": 130},
+                {"date": days_ago(3), "score": 52, "check_in": "rough", "streak": 0, "xp": 130},
+                {"date": days_ago(2), "score": 50, "check_in": "rough", "streak": 0, "xp": 130},
+                {"date": days_ago(1), "score": 48, "check_in": "okay", "streak": 1, "xp": 150},
+                {"date": days_ago(0), "score": 51, "check_in": None, "streak": 1, "xp": 150},
+            ],
+        }
+    if name == "Elena Rodriguez":
+        return {
+            "id": f"client-{suffix:03d}",
+            "name": name,
+            "age": age,
+            "dob": "1970-11-08",
+            "condition": condition,
+            "practitioner_id": "prac-001",
+            "avatar": "ER",
+            "sessions": [
+                {"id": "s6", "date": days_ago(30), "protocol": "Deep Session", "duration": 18, "before_score": 2, "after_score": 5, "zones": ["lower_back"]},
+                {"id": "s7", "date": days_ago(22), "protocol": "Signature Long (Recovery & Relief)", "duration": 26, "before_score": 3, "after_score": 6, "zones": ["lower_back", "left_hip"]},
+                {"id": "s8", "date": days_ago(15), "protocol": "HydraFlush", "duration": 9, "before_score": 5, "after_score": 7, "zones": ["lower_back"]},
+                {"id": "s9", "date": days_ago(7), "protocol": "Deep Session", "duration": 18, "before_score": 5, "after_score": 8, "zones": ["lower_back", "right_hip"]},
+            ],
+            "recovery_scores": [
+                {"date": days_ago(6), "score": 55, "check_in": "okay", "streak": 2, "xp": 90},
+                {"date": days_ago(5), "score": 59, "check_in": "great", "streak": 3, "xp": 140},
+                {"date": days_ago(4), "score": 63, "check_in": "great", "streak": 4, "xp": 190},
+                {"date": days_ago(3), "score": 67, "check_in": "great", "streak": 5, "xp": 240},
+                {"date": days_ago(2), "score": 70, "check_in": "okay", "streak": 6, "xp": 260},
+                {"date": days_ago(1), "score": 72, "check_in": "great", "streak": 7, "xp": 310},
+                {"date": days_ago(0), "score": 74, "check_in": None, "streak": 7, "xp": 310},
+            ],
+        }
+    return default_client_payload(name, age, condition, suffix)
+
+
+def init_client_store():
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS clients (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            age INTEGER,
+            dob TEXT,
+            condition TEXT,
+            practitioner_id TEXT,
+            avatar TEXT,
+            sessions TEXT NOT NULL,
+            recovery_scores TEXT NOT NULL
+        )
+    """)
+
+    count = cur.execute("SELECT COUNT(*) AS count FROM clients").fetchone()["count"]
+    if count == 0:
+        seeds = [
+            demo_client_payload("Maria Chen", 42, "IT Band / Hip Restriction", 1),
+            demo_client_payload("Marcus Williams", 35, "Shoulder Tension / Desk Worker", 2),
+            demo_client_payload("Elena Rodriguez", 55, "Post-Surgical Lower Back Recovery", 3),
+        ]
+        for seed in seeds:
+            cur.execute(
+                """
+                INSERT INTO clients (id, name, age, dob, condition, practitioner_id, avatar, sessions, recovery_scores)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    seed["id"],
+                    seed["name"],
+                    seed["age"],
+                    seed["dob"],
+                    seed["condition"],
+                    seed["practitioner_id"],
+                    seed["avatar"],
+                    json.dumps(seed["sessions"]),
+                    json.dumps(seed["recovery_scores"]),
+                ),
+            )
+    else:
+        demo_backfill = {
+            "Maria Chen": demo_client_payload("Maria Chen", 42, "IT Band / Hip Restriction", 1),
+            "Marcus Williams": demo_client_payload("Marcus Williams", 35, "Shoulder Tension / Desk Worker", 2),
+            "Elena Rodriguez": demo_client_payload("Elena Rodriguez", 55, "Post-Surgical Lower Back Recovery", 3),
+        }
+        rows = cur.execute("SELECT id, name, sessions, recovery_scores FROM clients").fetchall()
+        for row in rows:
+            demo = demo_backfill.get(row["name"])
+            if not demo:
+                continue
+            sessions = json.loads(row["sessions"] or "[]")
+            scores = json.loads(row["recovery_scores"] or "[]")
+            if len(sessions) == 0:
+                cur.execute("UPDATE clients SET sessions = ? WHERE id = ?", (json.dumps(demo["sessions"]), row["id"]))
+            if len(scores) <= 1:
+                cur.execute("UPDATE clients SET recovery_scores = ? WHERE id = ?", (json.dumps(demo["recovery_scores"]), row["id"]))
+    conn.commit()
+    conn.close()
+
+
+init_client_store()
 
 
 # ── Keyword extraction helpers ───────────────────────────────────────────────
@@ -565,6 +782,119 @@ def classify_asl_gesture(landmarks) -> str:
 @app.get("/health")
 def health():
     return {"status": "ok", "version": "2.0.0", "mediapipe": mp.__version__}
+
+
+@app.get("/api/clients")
+def list_clients(q: str = ""):
+    conn = get_db()
+    cur = conn.cursor()
+    if q.strip():
+      rows = cur.execute(
+          "SELECT * FROM clients WHERE lower(name) LIKE ? OR lower(condition) LIKE ? ORDER BY name ASC",
+          (f"%{q.lower()}%", f"%{q.lower()}%"),
+      ).fetchall()
+    else:
+      rows = cur.execute("SELECT * FROM clients ORDER BY name ASC").fetchall()
+    clients = [serialize_client_row(row) for row in rows]
+    conn.close()
+    return {"clients": clients}
+
+
+@app.post("/api/clients")
+def create_client(req: ClientCreateRequest):
+    conn = get_db()
+    cur = conn.cursor()
+    next_suffix = cur.execute("SELECT COUNT(*) AS count FROM clients").fetchone()["count"] + 1
+    client = default_client_payload(req.name.strip(), req.age, req.condition or "New Client", next_suffix)
+    cur.execute(
+        """
+        INSERT INTO clients (id, name, age, dob, condition, practitioner_id, avatar, sessions, recovery_scores)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            client["id"],
+            client["name"],
+            client["age"],
+            client["dob"],
+            client["condition"],
+            client["practitioner_id"],
+            client["avatar"],
+            json.dumps(client["sessions"]),
+            json.dumps(client["recovery_scores"]),
+        ),
+    )
+    conn.commit()
+    conn.close()
+    return {"client": client}
+
+
+@app.post("/api/clients/{client_id}/scores")
+def update_client_score(client_id: str, req: ClientScoreRequest):
+    conn = get_db()
+    cur = conn.cursor()
+    row = cur.execute("SELECT * FROM clients WHERE id = ?", (client_id,)).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(404, "Client not found")
+
+    scores = json.loads(row["recovery_scores"] or "[]")
+    today = time.strftime("%Y-%m-%d")
+    updated = False
+    for item in scores:
+        if item.get("date") == today:
+            item.update({
+                "score": req.score,
+                "check_in": req.check_in,
+                "streak": req.streak,
+                "xp": req.xp,
+            })
+            updated = True
+            break
+
+    if not updated:
+        scores.append({
+            "date": today,
+            "score": req.score,
+            "check_in": req.check_in,
+            "streak": req.streak,
+            "xp": req.xp,
+        })
+
+    cur.execute("UPDATE clients SET recovery_scores = ? WHERE id = ?", (json.dumps(scores), client_id))
+    conn.commit()
+    updated_row = cur.execute("SELECT * FROM clients WHERE id = ?", (client_id,)).fetchone()
+    client = serialize_client_row(updated_row)
+    conn.close()
+    return {"client": client}
+
+
+@app.post("/api/clients/{client_id}/sessions")
+def create_client_session(client_id: str, req: ClientSessionRequest):
+    conn = get_db()
+    cur = conn.cursor()
+    row = cur.execute("SELECT * FROM clients WHERE id = ?", (client_id,)).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(404, "Client not found")
+
+    sessions = json.loads(row["sessions"] or "[]")
+    session = {
+        "id": f"session-{len(sessions) + 1}",
+        "date": req.date or time.strftime("%Y-%m-%d"),
+        "protocol": req.protocol,
+        "duration": req.duration,
+        "before_score": req.before_score or 0,
+        "after_score": req.after_score if req.after_score is not None else (req.before_score or 0),
+        "zones": req.zones or [],
+    }
+    sessions.append(session)
+
+    cur.execute("UPDATE clients SET sessions = ? WHERE id = ?", (json.dumps(sessions), client_id))
+    conn.commit()
+    updated_row = cur.execute("SELECT * FROM clients WHERE id = ?", (client_id,)).fetchone()
+    client = serialize_client_row(updated_row)
+    conn.close()
+    return {"client": client}
 
 
 @app.post("/api/tts")

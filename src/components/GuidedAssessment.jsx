@@ -58,6 +58,47 @@ const MOVEMENT_GUIDE_SRC = {
   manual_entry: '/guides/manual_entry.svg',
 };
 
+function inferActivitiesFromVoice(voiceData) {
+  const text = (voiceData?.notes || '').toLowerCase();
+  const makesWorse = [];
+  const makesBetter = [];
+  const ranked = [];
+
+  if (text.includes('sitting')) {
+    makesWorse.push('Sitting');
+    ranked.push('Office / Desk Work');
+  }
+  if (text.includes('standing')) {
+    makesWorse.push('Standing');
+    ranked.push('Standing Work');
+  }
+  if (text.includes('walking')) {
+    if (text.includes('worse')) makesWorse.push('Walking');
+    if (text.includes('better')) makesBetter.push('Walking');
+  }
+  if (text.includes('stretch')) makesBetter.push('Exercise');
+  if (text.includes('exercise')) ranked.push('Sports / Training');
+  if (text.includes('drive')) {
+    makesWorse.push('Long Drives');
+    ranked.push('Prolonged Driving');
+  }
+  if (text.includes('desk') || text.includes('computer') || text.includes('office')) {
+    ranked.push('Office / Desk Work');
+  }
+  let positionTolerance = '';
+  if (text.includes('worse with sitting') || text.includes('hard to sit')) positionTolerance = 'Sitting';
+  else if (text.includes('worse with standing') || text.includes('hard to stand')) positionTolerance = 'Standing';
+
+  return {
+    ranked: [...new Set(ranked)].slice(0, 3),
+    sleep_posture: '',
+    makes_worse: [...new Set(makesWorse)],
+    makes_better: [...new Set(makesBetter)],
+    position_tolerance: positionTolerance,
+    hip_tightness: 'No',
+  };
+}
+
 function StepProgress({ currentStep }) {
   const steps = [
     { id: 1, label: 'Step 1', title: 'Area of Focus' },
@@ -1155,7 +1196,8 @@ function StepRemarks({ notes, onNotesChange, canGenerate, loading, onGenerate })
 }
 
 export default function GuidedAssessment({ patientName, onComplete, scanData, voiceData }) {
-  const [step, setStep] = useState(voiceData?.notes ? 4 : 1);
+  const inferredActivities = inferActivitiesFromVoice(voiceData);
+  const [step, setStep] = useState(voiceData?.zones?.length ? 2 : 1);
   const [loading, setLoading] = useState(false);
   const [zones, setZones] = useState(voiceData?.zones || []);
   const [zoneDetails, setZoneDetails] = useState(() => {
@@ -1165,21 +1207,14 @@ export default function GuidedAssessment({ patientName, onComplete, scanData, vo
         discomfort: voiceData?.discomfort ?? 5,
         behavior: voiceData?.behavior ?? BEHAVIORS[1],
         duration: voiceData?.duration ?? DURATIONS[2],
-        notes: '',
+        notes: voiceData?.notes || '',
       };
     });
     return next;
   });
   const [contraAcknowledged, setContraAcknowledged] = useState(false);
   const [romFindings, setRomFindings] = useState([]);
-  const [activities, setActivities] = useState({
-    ranked: [],
-    sleep_posture: '',
-    makes_worse: [],
-    makes_better: [],
-    position_tolerance: '',
-    hip_tightness: 'No',
-  });
+  const [activities, setActivities] = useState(inferredActivities);
   const [notes, setNotes] = useState(voiceData?.notes || '');
 
   const hasContra = useMemo(() => zones.some((zone) => CONTRAINDICATION_ZONES.includes(zone)), [zones]);

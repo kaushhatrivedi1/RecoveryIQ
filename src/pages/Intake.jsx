@@ -1,18 +1,20 @@
 import { useEffect, useRef, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   CheckCircle,
+  MapPin,
   Mic,
   Pause,
   Play,
   Search,
   Square,
+  Target,
   User,
   Volume2,
 } from 'lucide-react';
 import { PageShell } from '../components/AppChrome';
 import { useApp } from '../context/AppContext';
-import { PROTOCOLS } from '../data/mockData';
+import { BODY_ZONES, PROTOCOLS } from '../data/mockData';
 import { generateSessionPlan } from '../services/insights';
 import { buildMovementIntelligence } from '../services/innovation';
 import {
@@ -29,6 +31,9 @@ import GuidedAssessment from '../components/GuidedAssessment';
 import SessionPlan from '../components/SessionPlan';
 
 function LiveSessionCard({
+  patient,
+  assessmentData,
+  planData,
   sessionState,
   mins,
   secs,
@@ -39,6 +44,10 @@ function LiveSessionCard({
 }) {
   const paused = sessionState === 'paused';
   const running = sessionState === 'running';
+  const selectedZoneLabels = (assessmentData?.zones || [])
+    .map((zoneId) => BODY_ZONES.find((zone) => zone.id === zoneId)?.label || zoneId)
+    .slice(0, 3);
+  const latestScore = patient?.recovery_scores?.[patient.recovery_scores.length - 1]?.score || 0;
 
   return (
     <section className="riq-panel riq-mesh overflow-hidden px-6 py-6 sm:px-8">
@@ -49,8 +58,8 @@ function LiveSessionCard({
             Active Device Session
           </h2>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600 sm:text-base">
-            Session controls, timer state, and MQTT-backed device actions are unchanged. This block
-            is only re-skinned to match the rest of the app.
+            MQTT-backed device controls are active. This view now reflects the actual session focus
+            selected for {patient?.name || 'this client'} instead of showing only transport controls.
           </p>
         </div>
 
@@ -135,6 +144,41 @@ function LiveSessionCard({
             <div className="text-xs uppercase tracking-[0.18em] text-slate-400">Device Count</div>
             <div className="mt-3 text-lg font-semibold text-slate-950">1 active device</div>
           </div>
+          <div className="riq-stat p-5">
+            <div className="mb-2 flex items-center gap-2 text-xs uppercase tracking-[0.18em] text-slate-400">
+              <Target size={14} />
+              Session Focus
+            </div>
+            <div className="text-lg font-semibold text-slate-950">
+              {planData?.session_focus || 'Mobility session in progress'}
+            </div>
+            <div className="mt-2 text-sm text-slate-500">
+              {planData?.readiness_label || 'Moderate'} readiness · score {latestScore}
+            </div>
+          </div>
+          <div className="riq-stat p-5">
+            <div className="mb-2 flex items-center gap-2 text-xs uppercase tracking-[0.18em] text-slate-400">
+              <MapPin size={14} />
+              Active Areas
+            </div>
+            {selectedZoneLabels.length ? (
+              <div className="flex flex-wrap gap-2">
+                {selectedZoneLabels.map((label) => (
+                  <span key={label} className="riq-pill !border-sky-200 !bg-sky-50 !text-sky-700">
+                    {label}
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <div className="text-sm text-slate-500">No mapped body areas selected for this session.</div>
+            )}
+          </div>
+          <div className="riq-stat p-5">
+            <div className="text-xs uppercase tracking-[0.18em] text-slate-400">Protocol Reason</div>
+            <div className="mt-3 text-sm leading-6 text-slate-600">
+              {planData?.protocol_reason || 'Using the currently selected protocol for this device session.'}
+            </div>
+          </div>
         </div>
       </div>
     </section>
@@ -142,12 +186,30 @@ function LiveSessionCard({
 }
 
 export default function Intake() {
+  const navigate = useNavigate();
   const [params] = useSearchParams();
-  const { patients, mqttToken, setMqttToken, mqttBaseUrl, setMqttBaseUrl } = useApp();
+  const {
+    patients,
+    patientsLoading,
+    addPatient,
+    addPatientSession,
+    mqttToken,
+    setMqttToken,
+    mqttBaseUrl,
+    setMqttBaseUrl,
+  } = useApp();
 
   const patientId = params.get('patient');
   const patient = patients.find((entry) => entry.id === patientId) || null;
   const patientName = patient?.name || 'Annie Sturm';
+  const [clientQuery, setClientQuery] = useState('');
+  const [showClientForm, setShowClientForm] = useState(false);
+  const [creatingClient, setCreatingClient] = useState(false);
+  const [clientForm, setClientForm] = useState({
+    name: '',
+    age: '',
+    condition: '',
+  });
 
   const [showCamera, setShowCamera] = useState(false);
   const [showVoice, setShowVoice] = useState(false);
@@ -192,6 +254,21 @@ export default function Intake() {
     if (!planData || !sessionPlanRef.current) return;
     sessionPlanRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }, [planData]);
+
+  useEffect(() => {
+    // Intake/report state is session-specific and should not leak between clients.
+    setShowCamera(false);
+    setShowVoice(false);
+    setScanData(null);
+    setVoiceData(null);
+    setVoiceFilled(false);
+    setAssessmentData(null);
+    setPlanData(null);
+    setLoadingPlan(false);
+    setUiMode('builder');
+    setSessionState('idle');
+    setTimeLeft(0);
+  }, [patientId]);
 
   function handleCameraAssessment(data) {
     setScanData(data);
@@ -248,6 +325,16 @@ export default function Intake() {
     const payload = buildStartPayload(deviceMac, protocol);
     const ok = await hydrawavPublish({ baseUrl: mqttBase, token, payload });
     if (ok !== false) {
+      if (patientId && patient) {
+        const latestScore = patient.recovery_scores?.[patient.recovery_scores.length - 1]?.score || 0;
+        await addPatientSession(patientId, {
+          protocol: protocol?.name || selectedProtocol.name,
+          duration: protocol?.duration ?? selectedProtocol.duration,
+          zones: assessmentData?.zones || [],
+          before_score: latestScore,
+          after_score: latestScore,
+        });
+      }
       setTimeLeft((protocol?.duration ?? selectedProtocol.duration) * 60);
       setSessionState('running');
       setUiMode('session');
@@ -293,6 +380,33 @@ export default function Intake() {
   const mins = String(Math.floor(timeLeft / 60)).padStart(2, '0');
   const secs = String(timeLeft % 60).padStart(2, '0');
   const activeDevices = sessionState === 'running' || sessionState === 'paused' ? 1 : 0;
+  const filteredPatients = patients.filter((entry) => {
+    const query = clientQuery.trim().toLowerCase();
+    if (!query) return true;
+    return (
+      entry.name.toLowerCase().includes(query) ||
+      entry.condition.toLowerCase().includes(query)
+    );
+  });
+
+  async function handleCreateClient() {
+    if (!clientForm.name.trim() || !clientForm.condition.trim()) return;
+
+    setCreatingClient(true);
+    try {
+      const created = await addPatient({
+        name: clientForm.name.trim(),
+        age: Number(clientForm.age) || 0,
+        condition: clientForm.condition.trim(),
+      });
+      setShowClientForm(false);
+      setClientForm({ name: '', age: '', condition: '' });
+      setClientQuery(created.name);
+      navigate(`/intake?patient=${created.id}`);
+    } finally {
+      setCreatingClient(false);
+    }
+  }
 
   return (
     <PageShell
@@ -319,8 +433,9 @@ export default function Intake() {
           <div className="mb-4 flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.22em] text-slate-500">
             Session Client
           </div>
-          <div className="flex flex-col gap-3 xl:flex-row">
-            <div className="relative flex-1">
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-start">
+            <div className="flex-1 space-y-3">
+              <div className="relative">
               <Search
                 size={18}
                 className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-slate-400"
@@ -328,7 +443,42 @@ export default function Intake() {
               <input
                 placeholder="Search and choose a client..."
                 className="riq-input pl-12"
+                value={clientQuery}
+                onChange={(e) => setClientQuery(e.target.value)}
               />
+              </div>
+
+              <div className="max-h-56 overflow-y-auto rounded-[1.4rem] border border-slate-200 bg-slate-50/70">
+                {patientsLoading ? (
+                  <div className="px-4 py-4 text-sm text-slate-500">Loading client records...</div>
+                ) : filteredPatients.length === 0 ? (
+                  <div className="px-4 py-4 text-sm text-slate-500">
+                    No clients match this search yet.
+                  </div>
+                ) : (
+                  filteredPatients.slice(0, 6).map((entry) => {
+                    const isSelected = entry.id === patient?.id;
+                    return (
+                      <button
+                        key={entry.id}
+                        type="button"
+                        onClick={() => navigate(`/intake?patient=${entry.id}`)}
+                        className={`flex w-full items-center justify-between gap-4 border-b border-slate-200/80 px-4 py-3 text-left last:border-b-0 ${
+                          isSelected ? 'bg-sky-50/80' : 'hover:bg-white'
+                        }`}
+                      >
+                        <div>
+                          <div className="font-semibold text-slate-950">{entry.name}</div>
+                          <div className="text-sm text-slate-500">{entry.condition}</div>
+                        </div>
+                        <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-400">
+                          {entry.age || 'Age n/a'}
+                        </div>
+                      </button>
+                    );
+                  })
+                )}
+              </div>
             </div>
             <div className="flex rounded-full border border-slate-200 bg-slate-50 p-1">
               <button
@@ -341,10 +491,57 @@ export default function Intake() {
                 Guest
               </button>
             </div>
-            <button type="button" className="riq-button-secondary">
+            <button
+              type="button"
+              onClick={() => setShowClientForm((value) => !value)}
+              className="riq-button-secondary"
+            >
               + New Client
             </button>
           </div>
+
+          {showClientForm ? (
+            <div className="mt-4 grid gap-3 rounded-[1.5rem] border border-slate-200 bg-slate-50/80 p-4 sm:grid-cols-3">
+              <input
+                value={clientForm.name}
+                onChange={(e) => setClientForm((current) => ({ ...current, name: e.target.value }))}
+                className="riq-input text-sm"
+                placeholder="Client name"
+              />
+              <input
+                value={clientForm.age}
+                onChange={(e) => setClientForm((current) => ({ ...current, age: e.target.value }))}
+                className="riq-input text-sm"
+                placeholder="Age"
+                inputMode="numeric"
+              />
+              <input
+                value={clientForm.condition}
+                onChange={(e) =>
+                  setClientForm((current) => ({ ...current, condition: e.target.value }))
+                }
+                className="riq-input text-sm"
+                placeholder="Primary concern / condition"
+              />
+              <div className="sm:col-span-3 flex flex-wrap gap-3">
+                <button
+                  type="button"
+                  onClick={handleCreateClient}
+                  disabled={creatingClient || !clientForm.name.trim() || !clientForm.condition.trim()}
+                  className="riq-button disabled:cursor-not-allowed"
+                >
+                  {creatingClient ? 'Creating...' : 'Create Client'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowClientForm(false)}
+                  className="riq-button-ghost"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : null}
         </section>
 
         <section className="flex flex-wrap gap-3">
@@ -407,6 +604,7 @@ export default function Intake() {
 
         {showVoice ? (
           <VoiceIntake
+            key={`voice-${patientId || 'guest'}`}
             patientName={patientName}
             onIntakeComplete={handleVoiceIntakeComplete}
             onClose={() => setShowVoice(false)}
@@ -415,6 +613,7 @@ export default function Intake() {
 
         {showCamera ? (
           <CameraAssessment
+            key={`camera-${patientId || 'guest'}`}
             patientName={patientName}
             onAssessmentComplete={handleCameraAssessment}
             onClose={() => setShowCamera(false)}
@@ -423,6 +622,9 @@ export default function Intake() {
 
         {uiMode === 'session' ? (
           <LiveSessionCard
+            patient={patient}
+            assessmentData={assessmentData}
+            planData={planData}
             sessionState={sessionState}
             mins={mins}
             secs={secs}
@@ -439,6 +641,7 @@ export default function Intake() {
           </section>
         ) : (
           <GuidedAssessment
+            key={`guided-${patientId || 'guest'}`}
             patientName={patientName}
             scanData={scanData}
             voiceData={voiceData}
@@ -455,6 +658,7 @@ export default function Intake() {
         {planData ? (
           <div ref={sessionPlanRef}>
             <SessionPlan
+              key={`plan-${patientId || 'guest'}`}
               assessmentData={assessmentData}
               planData={planData}
               scanData={scanData}

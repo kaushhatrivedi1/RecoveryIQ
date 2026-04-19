@@ -4,6 +4,8 @@ import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import Intake from './pages/Intake';
 import Journey from './pages/Journey';
+import Clients from './pages/Clients';
+import Devices from './pages/Devices';
 import Pricing from './pages/Pricing';
 import HackathonResources from './pages/HackathonResources';
 
@@ -22,6 +24,8 @@ export default function App() {
           <Route path="/hackathon" element={<HackathonResources />} />
           <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
           <Route path="/intake" element={<ProtectedRoute><Intake /></ProtectedRoute>} />
+          <Route path="/clients" element={<ProtectedRoute><Clients /></ProtectedRoute>} />
+          <Route path="/devices" element={<ProtectedRoute><Devices /></ProtectedRoute>} />
           <Route path="/journey/:patientId" element={<ProtectedRoute><Journey /></ProtectedRoute>} />
           <Route path="*" element={<Navigate to="/login" replace />} />
         </Routes>

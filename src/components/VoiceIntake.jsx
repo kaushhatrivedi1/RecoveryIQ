@@ -7,33 +7,33 @@ const BACKEND = 'http://localhost:8000';
 const QUESTIONS = [
   {
     id: 'area',
-    text: 'Choose the main area first. Say the exact body area keyword, for example: lower back, neck, right hip, left shoulder, upper back, right knee.',
+    text: 'What is the main body area today? Use one exact area only, like lower back, neck, right hip, left shoulder, upper back, or right knee.',
     options: ['lower back', 'neck', 'right hip', 'left shoulder', 'upper back', 'right knee'],
-    placeholder: 'Say or type an exact area keyword like "lower back" or "right hip"...',
+    placeholder: 'Use one exact area only, like "lower back" or "right hip"...',
   },
   {
     id: 'level',
-    text: 'Use one number from 1 to 10 only. Example: 3, 5, or 8.',
+    text: 'What is the discomfort level right now? Use one number from 1 to 10 only.',
     options: ['2', '4', '5', '7', '8'],
-    placeholder: 'Say or type one number from 1 to 10...',
+    placeholder: 'Use one number only, from 1 to 10...',
   },
   {
     id: 'pattern',
-    text: 'Choose one exact phrase: Comes and Goes, Always Present, Only with Certain Activities, or Varies Day to Day.',
+    text: 'Which pattern fits best? Use one exact phrase only: Comes and Goes, Always Present, Only with Certain Activities, or Varies Day to Day.',
     options: ['Comes and Goes', 'Always Present', 'Only with Certain Activities', 'Varies Day to Day'],
-    placeholder: 'Say one exact phrase like "Comes and Goes"...',
+    placeholder: 'Use one exact phrase only...',
   },
   {
     id: 'duration',
-    text: 'Choose one exact time bucket: Less than 6 weeks, 6 weeks to 3 months, 3 to 6 months, 6 months to 1 year, or More than 1 year.',
+    text: 'How long has this been going on? Use one exact time bucket only.',
     options: ['Less than 6 weeks', '6 weeks to 3 months', '3 to 6 months', '6 months to 1 year', 'More than 1 year'],
-    placeholder: 'Say one exact duration bucket...',
+    placeholder: 'Use one exact duration bucket only...',
   },
   {
     id: 'notes',
-    text: 'Add one short note about what makes it worse or better. Example: worse with sitting, better with stretching.',
+    text: 'What changes the discomfort? Use one short phrase like worse with sitting, worse with standing, better with stretching, or better with walking.',
     options: ['worse with sitting', 'worse with standing', 'better with stretching', 'better with walking'],
-    placeholder: 'Say one short note like "worse with sitting"...',
+    placeholder: 'Use one short phrase only...',
   },
 ];
 
@@ -70,6 +70,69 @@ const BEHAVIOR_KEYWORDS = {
   'Only with Certain Activities': ['when i', 'during', 'only when', 'after exercise', 'only with'],
   'Varies Day to Day': ['some days', 'varies', 'depends', 'better some days', 'worse some days'],
 };
+
+const QUESTION_LABELS = {
+  area: 'Area',
+  level: 'Discomfort',
+  pattern: 'Pattern',
+  duration: 'Duration',
+  notes: 'Notes',
+};
+
+function findNormalizedValue(input, options) {
+  const normalizedInput = input.trim().toLowerCase();
+  if (!normalizedInput) return '';
+
+  const exactOption = options.find((option) => option.toLowerCase() === normalizedInput);
+  if (exactOption) return exactOption;
+
+  const containsOption = options.find((option) => normalizedInput.includes(option.toLowerCase()));
+  if (containsOption) return containsOption;
+
+  return input.trim();
+}
+
+function normalizeArea(answer) {
+  const lower = answer.trim().toLowerCase();
+  const matched = Object.entries(BODY_ZONE_KEYWORDS).find(([, keywords]) =>
+    keywords.some((keyword) => lower.includes(keyword)),
+  );
+  if (!matched) return answer.trim();
+
+  const [zoneId] = matched;
+  const preferredLabel = BODY_ZONE_KEYWORDS[zoneId][0];
+  return preferredLabel;
+}
+
+function normalizeLevel(answer) {
+  const match = answer.match(/\b([1-9]|10)\b/);
+  return match ? match[1] : answer.trim();
+}
+
+function normalizeAnswer(questionId, answer, options = []) {
+  switch (questionId) {
+    case 'area':
+      return normalizeArea(answer);
+    case 'level':
+      return normalizeLevel(answer);
+    case 'pattern':
+    case 'duration':
+    case 'notes':
+      return findNormalizedValue(answer, options);
+    default:
+      return answer.trim();
+  }
+}
+
+function buildStructuredTranscript(answers) {
+  return [
+    `Area: ${answers.area || 'lower back'}`,
+    `Discomfort: ${answers.level || '5'} out of 10`,
+    `Pattern: ${answers.pattern || 'Comes and Goes'}`,
+    `Duration: ${answers.duration || 'Less than 6 weeks'}`,
+    `Notes: ${answers.notes || 'worse with sitting'}`,
+  ].join('. ');
+}
 
 function localAnalyzeTranscript(transcript, patientName) {
   const text = transcript.toLowerCase();
@@ -180,12 +243,13 @@ export default function VoiceIntake({ patientName, onIntakeComplete, onClose }) 
     const answer = currentTranscript.trim();
     if (!answer) return;
 
-    const nextAnswers = { ...answers, [currentQuestion.id]: answer };
+    const normalizedAnswer = normalizeAnswer(currentQuestion.id, answer, currentQuestion.options || []);
+    const nextAnswers = { ...answers, [currentQuestion.id]: normalizedAnswer };
     setAnswers(nextAnswers);
 
     if (step === QUESTIONS.length - 1) {
       setProcessing(true);
-      const combinedTranscript = Object.values(nextAnswers).join('. ');
+      const combinedTranscript = buildStructuredTranscript(nextAnswers);
       try {
         const response = await fetch(`${BACKEND}/api/analyze-speech`, {
           method: 'POST',
@@ -344,7 +408,9 @@ export default function VoiceIntake({ patientName, onIntakeComplete, onClose }) 
                 {Object.entries(answers).map(([key, value]) => (
                   <div key={key} className="mb-1 flex gap-2">
                     <CheckCircle size={12} className="mt-0.5 shrink-0 text-emerald-500" />
-                    <span className="truncate text-xs text-slate-500">{value}</span>
+                    <span className="truncate text-xs text-slate-500">
+                      {QUESTION_LABELS[key] || key}: {value}
+                    </span>
                   </div>
                 ))}
               </div>

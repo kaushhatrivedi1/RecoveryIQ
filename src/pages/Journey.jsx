@@ -2,17 +2,20 @@ import { useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip } from 'recharts';
 import {
+  Activity,
   Flame,
   Minus,
+  ShieldCheck,
   Sparkles,
   Star,
   ThumbsUp,
   TrendingDown,
+  TrendingUp,
   Zap,
 } from 'lucide-react';
 import { PageShell } from '../components/AppChrome';
 import { useApp } from '../context/AppContext';
-import { calcRecoveryScore } from '../data/mockData';
+import { BODY_ZONES, HOME_EXERCISES_MAP, calcRecoveryScore } from '../data/mockData';
 
 const LEVELS = [
   { level: 1, label: 'Beginner', xp: 0 },
@@ -56,14 +59,111 @@ function ScoreRing({ score }) {
   );
 }
 
+function zoneLabel(zoneId) {
+  return BODY_ZONES.find((entry) => entry.id === zoneId)?.label || zoneId;
+}
+
+function deriveJourneyInsights(patient, latest, delta) {
+  const sessions = patient.sessions || [];
+  const latestSession = sessions[sessions.length - 1] || null;
+  const recentGains = sessions.slice(-3).map((session) => session.after_score - session.before_score);
+  const avgGain = recentGains.length
+    ? Number((recentGains.reduce((sum, gain) => sum + gain, 0) / recentGains.length).toFixed(1))
+    : 0;
+  const activeZones = (latestSession?.zones || []).map(zoneLabel);
+
+  let momentum = 'Your recovery is stable right now.';
+  if (delta > 0) momentum = `Recovery is trending upward by ${delta} points since the last score update.`;
+  else if (delta < 0) momentum = `Recovery dipped by ${Math.abs(delta)} points, so today should bias toward easier recovery work.`;
+
+  let recommendation = 'Keep sessions consistent and stay with the current recovery rhythm.';
+  if (avgGain >= 2) recommendation = `Recent sessions are helping. Average lift is ${avgGain} points per session, so keep the current protocol family and build consistency.`;
+  else if (sessions.length === 0) recommendation = 'No session history yet. The next priority is building a first clean baseline and tracking how the body responds after one complete session.';
+  else if (avgGain <= 0.5) recommendation = 'Session gains are modest so far, which usually means the next plan should focus on tighter targeting, better consistency, or gentler recovery intensity.';
+
+  const consistency =
+    sessions.length >= 3
+      ? `You have ${sessions.length} recorded sessions, which is enough to start seeing a pattern instead of one-off changes.`
+      : sessions.length > 0
+        ? `You only have ${sessions.length} recorded ${sessions.length === 1 ? 'session' : 'sessions'}, so this is still an early baseline phase.`
+        : 'No recovery sessions are stored yet, so the next milestone is completing a first full session and response check.';
+
+  const bottleneck = activeZones.length
+    ? `${activeZones[0]} is the clearest active focus from the latest session, so the recovery plan should stay targeted there before broadening the routine.`
+    : 'No focused body region is stored yet, so the next assessment should identify the main area driving compensation.';
+
+  const nextStep =
+    avgGain >= 2
+      ? 'Next step: keep the same protocol family and increase consistency before making big changes.'
+      : avgGain > 0
+        ? 'Next step: keep sessions regular, but tighten pad placement and reassess the same movement pattern after the next session.'
+        : sessions.length
+          ? 'Next step: reduce complexity, focus on one primary area, and compare before/after movement after the next session.'
+          : 'Next step: complete one guided intake, one session, and one follow-up check-in so the recovery model has enough signal to adapt.';
+
+  return {
+    latestSession,
+    avgGain,
+    activeZones,
+    momentum,
+    recommendation,
+    consistency,
+    bottleneck,
+    nextStep,
+    adherenceText:
+      latest?.check_in === 'great'
+        ? 'Self-check feedback is strong today, which supports progressing carefully.'
+        : latest?.check_in === 'rough'
+          ? 'Today’s self-check suggests backing off intensity and prioritizing comfort.'
+          : 'Current self-check suggests a moderate recovery dose is appropriate.',
+  };
+}
+
+function deriveHomeRoutine(patient) {
+  const sessions = patient.sessions || [];
+  const latestSession = sessions[sessions.length - 1];
+  const sourceZones = latestSession?.zones || [];
+  const exercises = sourceZones
+    .flatMap((zoneId) => HOME_EXERCISES_MAP[zoneId] || [])
+    .slice(0, 4);
+
+  if (exercises.length) {
+    return exercises.map((exercise) => `${exercise.name} — ${exercise.reps}`);
+  }
+
+  return [
+    'Mobility reset — 8 slow reps',
+    'Supported stretch — 30 seconds per side',
+    'Breathing reset — 5 controlled breaths',
+    'Light activation drill — 2 sets',
+  ];
+}
+
 export default function Journey() {
   const { patientId } = useParams();
   const navigate = useNavigate();
   const { patients, updatePatientScores } = useApp();
   const [checkedIn, setCheckedIn] = useState(false);
 
-  const patient = patients.find((entry) => entry.id === patientId) || patients[0];
-  const scores = patient.recovery_scores;
+  const patient = patients.find((entry) => entry.id === patientId) || patients[0] || null;
+
+  if (!patient) {
+    return (
+      <PageShell
+        backTo="/dashboard"
+        eyebrow="Patient Journey"
+        title="No patient selected"
+        subtitle="Create or select a client before opening the journey view."
+        contentWidth="max-w-5xl"
+      >
+        <div className="riq-card px-6 py-10 text-center text-slate-500">
+          No journey data is available yet.
+        </div>
+      </PageShell>
+    );
+  }
+
+  const scores = patient.recovery_scores || [];
   const latest = scores[scores.length - 1];
   const prev = scores[scores.length - 2];
   const delta = latest && prev ? latest.score - prev.score : 0;
@@ -75,12 +175,8 @@ export default function Journey() {
   const todayCheckedIn = latest?.check_in !== null;
 
   const chartData = scores.map((score, index) => ({ day: `D${index + 1}`, score: score.score }));
-  const homeRoutine = [
-    'Hip mobility circle — 10 reps each direction',
-    'Standing hip flexor stretch — 30 seconds per side',
-    'Glute bridge — 3 sets of 12',
-    'Foam roll the IT band — 2 minutes per side',
-  ];
+  const homeRoutine = deriveHomeRoutine(patient);
+  const journeyInsights = deriveJourneyInsights(patient, latest, delta);
 
   async function handleCheckIn(type) {
     const mobilityMap = { great: 8, okay: 6, rough: 4 };
@@ -203,10 +299,15 @@ export default function Journey() {
           <div className="riq-card px-5 py-5 sm:px-6">
             <h3 className="riq-section-title text-2xl font-semibold text-slate-950">Session history</h3>
             <div className="mt-4 space-y-3">
-              {patient.sessions
-                .slice()
-                .reverse()
-                .map((session) => (
+              {(patient.sessions || []).length === 0 ? (
+                <div className="rounded-[1.5rem] border border-slate-200/70 bg-slate-50/85 px-4 py-6 text-sm text-slate-500">
+                  No sessions recorded yet for this client.
+                </div>
+              ) : (
+                (patient.sessions || [])
+                  .slice()
+                  .reverse()
+                  .map((session) => (
                   <div key={session.id} className="rounded-[1.5rem] border border-slate-200/70 bg-slate-50/85 px-4 py-4">
                     <div className="flex items-center justify-between gap-4">
                       <div>
@@ -214,6 +315,15 @@ export default function Journey() {
                         <div className="mt-1 text-sm text-slate-500">
                           {session.date} · {session.duration} min
                         </div>
+                        {(session.zones || []).length ? (
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            {session.zones.slice(0, 3).map((zone) => (
+                              <span key={zone} className="riq-pill !border-slate-200 !bg-white !text-slate-600">
+                                {zoneLabel(zone)}
+                              </span>
+                            ))}
+                          </div>
+                        ) : null}
                       </div>
                       <div className="text-right">
                         <div className="text-lg font-semibold text-emerald-600">
@@ -225,7 +335,8 @@ export default function Journey() {
                       </div>
                     </div>
                   </div>
-                ))}
+                  ))
+              )}
             </div>
           </div>
         </div>
@@ -299,16 +410,44 @@ export default function Journey() {
           </div>
 
           <div className="riq-card px-5 py-5 sm:px-6">
-            <div className="riq-eyebrow mb-4">Care summary</div>
-            <div className="space-y-3 text-sm leading-6 text-slate-600">
-              <p>
-                RecoveryIQ keeps the patient view brighter and more optimistic while still preserving
-                the clinical signals practitioners need.
-              </p>
-              <p>
-                Use the dashboard for staff operations and this journey page for patient motivation,
-                adherence, and daily recovery rituals.
-              </p>
+            <div className="riq-eyebrow mb-4">Recovery Feedback</div>
+            <div className="space-y-4">
+              <div className="rounded-[1.4rem] bg-slate-50 px-4 py-4">
+                <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-slate-900">
+                  <TrendingUp size={16} className="text-sky-600" />
+                  Momentum
+                </div>
+                <p className="text-sm leading-6 text-slate-600">{journeyInsights.momentum}</p>
+              </div>
+              <div className="rounded-[1.4rem] bg-slate-50 px-4 py-4">
+                <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-slate-900">
+                  <Activity size={16} className="text-cyan-600" />
+                  Session Response
+                </div>
+                <p className="text-sm leading-6 text-slate-600">{journeyInsights.recommendation}</p>
+                {journeyInsights.latestSession ? (
+                  <div className="mt-3 text-xs uppercase tracking-[0.16em] text-slate-400">
+                    Last session: {journeyInsights.latestSession.protocol} · focused on{' '}
+                    {(journeyInsights.activeZones.length ? journeyInsights.activeZones : ['general mobility']).join(', ')}
+                  </div>
+                ) : null}
+              </div>
+              <div className="rounded-[1.4rem] bg-slate-50 px-4 py-4">
+                <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-slate-900">
+                  <Sparkles size={16} className="text-violet-600" />
+                  Recovery Pattern
+                </div>
+                <p className="text-sm leading-6 text-slate-600">{journeyInsights.consistency}</p>
+                <p className="mt-3 text-sm leading-6 text-slate-600">{journeyInsights.bottleneck}</p>
+              </div>
+              <div className="rounded-[1.4rem] bg-slate-50 px-4 py-4">
+                <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-slate-900">
+                  <ShieldCheck size={16} className="text-emerald-600" />
+                  Daily Guidance
+                </div>
+                <p className="text-sm leading-6 text-slate-600">{journeyInsights.adherenceText}</p>
+                <p className="mt-3 text-sm font-medium leading-6 text-slate-700">{journeyInsights.nextStep}</p>
+              </div>
             </div>
             <button type="button" onClick={() => navigate('/dashboard')} className="riq-button-secondary mt-5 w-full">
               Back to dashboard
