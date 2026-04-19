@@ -315,8 +315,11 @@ def compute_rppg(frames_b64: list, fps: float = 10.0) -> dict:
 
 # ── Pose analysis helper ─────────────────────────────────────────────────────
 
+VIS_MIN = 0.55  # minimum landmark visibility to trust an angle reading
+
 def analyze_single_pose_frame(frame):
-    """Run MediaPipe Pose on one frame, return angles + asymmetry."""
+    """Run MediaPipe Pose on one frame, return angles + asymmetry.
+    Angles are only computed when all contributing landmarks meet VIS_MIN."""
     h, w = frame.shape[:2]
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
@@ -328,55 +331,72 @@ def analyze_single_pose_frame(frame):
 
     lm = results.pose_landmarks.landmark
 
-    def angle_3pts(a, b, c):
+    def _raw_angle(a, b, c):
         ba = np.array([a.x - b.x, a.y - b.y])
         bc = np.array([c.x - b.x, c.y - b.y])
         cos_a = np.dot(ba, bc) / (np.linalg.norm(ba) * np.linalg.norm(bc) + 1e-8)
         return float(np.degrees(np.arccos(np.clip(cos_a, -1, 1))))
 
-    l_sh = angle_3pts(lm[11], lm[13], lm[15])
-    r_sh = angle_3pts(lm[12], lm[14], lm[16])
-    l_hip = angle_3pts(lm[11], lm[23], lm[25])
-    r_hip = angle_3pts(lm[12], lm[24], lm[26])
-    l_knee = angle_3pts(lm[23], lm[25], lm[27])
-    r_knee = angle_3pts(lm[24], lm[26], lm[28])
-    # Wrist flexion: elbow → wrist → index MCP (landmark 19/20)
-    l_wrist = angle_3pts(lm[13], lm[15], lm[19])
-    r_wrist = angle_3pts(lm[14], lm[16], lm[20])
+    def safe_angle(a, b, c):
+        """Return angle only when all 3 landmarks are clearly visible."""
+        if min(a.visibility, b.visibility, c.visibility) < VIS_MIN:
+            return None
+        return _raw_angle(a, b, c)
+
+    # Shoulder flexion: angle AT the shoulder (hip → shoulder → elbow)
+    l_sh    = safe_angle(lm[23], lm[11], lm[13])
+    r_sh    = safe_angle(lm[24], lm[12], lm[14])
+    # Elbow flexion: angle AT the elbow (shoulder → elbow → wrist)
+    l_elbow = safe_angle(lm[11], lm[13], lm[15])
+    r_elbow = safe_angle(lm[12], lm[14], lm[16])
+    # Hip flexion: angle AT the hip (shoulder → hip → knee)
+    l_hip   = safe_angle(lm[11], lm[23], lm[25])
+    r_hip   = safe_angle(lm[12], lm[24], lm[26])
+    # Knee flexion: angle AT the knee (hip → knee → ankle)
+    l_knee  = safe_angle(lm[23], lm[25], lm[27])
+    r_knee  = safe_angle(lm[24], lm[26], lm[28])
+    # Ankle dorsiflexion: angle AT the ankle (knee → ankle → foot index)
+    l_ankle = safe_angle(lm[25], lm[27], lm[31])
+    r_ankle = safe_angle(lm[26], lm[28], lm[32])
 
     shoulder_diff = abs(lm[11].y - lm[12].y)
-    hip_diff = abs(lm[23].y - lm[24].y)
+    hip_diff      = abs(lm[23].y - lm[24].y)
 
     flags = []
-    if shoulder_diff > 0.03:
-        side = "Left" if lm[11].y < lm[12].y else "Right"
-        flags.append(f"{side} shoulder elevation detected")
-    if hip_diff > 0.02:
-        side = "Left" if lm[23].y < lm[24].y else "Right"
-        flags.append(f"{side} hip elevation detected")
-    if abs(l_knee - r_knee) > 15:
+    if lm[11].visibility > VIS_MIN and lm[12].visibility > VIS_MIN:
+        if shoulder_diff > 0.03:
+            side = "Left" if lm[11].y < lm[12].y else "Right"
+            flags.append(f"{side} shoulder elevation detected")
+    if lm[23].visibility > VIS_MIN and lm[24].visibility > VIS_MIN:
+        if hip_diff > 0.02:
+            side = "Left" if lm[23].y < lm[24].y else "Right"
+            flags.append(f"{side} hip elevation detected")
+    if l_knee is not None and r_knee is not None and abs(l_knee - r_knee) > 15:
         flags.append("Knee angle asymmetry — possible compensation pattern")
-    if abs(l_wrist - r_wrist) > 20:
-        flags.append("Wrist angle asymmetry — possible grip or wrist restriction")
+    if l_sh is not None and r_sh is not None and abs(l_sh - r_sh) > 15:
+        flags.append("Shoulder flexion asymmetry — possible restriction on one side")
 
     landmarks_out = [
         {"x": l.x, "y": l.y, "z": l.z, "visibility": l.visibility}
         for l in lm
     ]
 
+    # Only include joints with a valid (visible) reading
+    joint_angles = {}
+    for name, val in [
+        ("left_shoulder",  l_sh),  ("right_shoulder", r_sh),
+        ("left_elbow",     l_elbow), ("right_elbow",  r_elbow),
+        ("left_hip",       l_hip),  ("right_hip",     r_hip),
+        ("left_knee",      l_knee), ("right_knee",    r_knee),
+        ("left_ankle",     l_ankle),("right_ankle",   r_ankle),
+    ]:
+        if val is not None:
+            joint_angles[name] = round(val, 1)
+
     return {
         "detected": True,
         "landmarks": landmarks_out,
-        "joint_angles": {
-            "left_shoulder":  round(l_sh, 1),
-            "right_shoulder": round(r_sh, 1),
-            "left_hip":       round(l_hip, 1),
-            "right_hip":      round(r_hip, 1),
-            "left_knee":      round(l_knee, 1),
-            "right_knee":     round(r_knee, 1),
-            "left_wrist":     round(l_wrist, 1),
-            "right_wrist":    round(r_wrist, 1),
-        },
+        "joint_angles": joint_angles,
         "asymmetry_flags": flags,
         "shoulder_diff_pct": round(shoulder_diff * 100, 1),
         "hip_diff_pct":      round(hip_diff * 100, 1),
@@ -807,4 +827,4 @@ def _generate_report_fallback(bundle: dict, name: str) -> dict:
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

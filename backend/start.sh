@@ -1,9 +1,11 @@
 #!/bin/bash
 cd "$(dirname "$0")"
-if [ ! -d ".venv" ]; then
-  python3 -m venv .venv
+PYTHON=/opt/homebrew/bin/python3.12
+if [ ! -d ".venv" ] || [ ! -f ".venv/bin/python" ]; then
+  rm -rf .venv
+  $PYTHON -m venv .venv
 fi
 source .venv/bin/activate
-python3 -m pip install -r requirements.txt -q
+python -m pip install -r requirements.txt -q
 echo "Starting RecoveryIQ Python backend on http://localhost:8000"
-python3 main.py
+python main.py

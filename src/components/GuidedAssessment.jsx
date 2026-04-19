@@ -293,7 +293,7 @@ function StepRom({ romFindings, onAddFinding, onRemoveFinding }) {
     setDraft({ body_part: '', side: 'Both', sensations: [], custom_test: '' });
   }
 
-  function importCaptureFindings(findings) {
+  function importCaptureFindings(findings, rangeOfMotion = {}, qualityScore = null) {
     findings.forEach((finding) => {
       onAddFinding({
         test: activeConfig.id,
@@ -302,6 +302,8 @@ function StepRom({ romFindings, onAddFinding, onRemoveFinding }) {
         side: finding.side || 'Both',
         position: 'Both',
         sensations: finding.sensations || [],
+        range_of_motion: rangeOfMotion,
+        quality_score: qualityScore,
       });
     });
   }
@@ -424,6 +426,18 @@ function StepRom({ romFindings, onAddFinding, onRemoveFinding }) {
                       ))}
                     </div>
                   ) : null}
+                  {finding.range_of_motion && Object.keys(finding.range_of_motion).length > 0 ? (
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {Object.entries(finding.range_of_motion).slice(0, 4).map(([joint, val]) => (
+                        <span key={joint} className="rounded-full bg-[#EAF2FF] px-2.5 py-1 text-[10px] font-bold text-[#3A5FA8]">
+                          {joint.replace(/_/g, ' ')} {val.range}°
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+                  {finding.quality_score != null ? (
+                    <div className="mt-1 text-[10px] font-bold text-[#8B93A5]">Quality score: {finding.quality_score}</div>
+                  ) : null}
                 </div>
               </div>
               <button type="button" onClick={() => onRemoveFinding(index)} className="text-[#C1C7D1] transition-colors hover:text-[#D05D5D]">
@@ -437,18 +451,277 @@ function StepRom({ romFindings, onAddFinding, onRemoveFinding }) {
   );
 }
 
+const JOINT_KEYS = ['left_knee', 'right_knee', 'left_hip', 'right_hip', 'left_shoulder', 'right_shoulder'];
+
+// Joints that MUST have data for each movement type to trust the result
+const REQUIRED_JOINTS = {
+  squat:              ['left_knee', 'right_knee', 'left_hip', 'right_hip'],
+  sit_to_stand:       ['left_knee', 'right_knee', 'left_hip', 'right_hip'],
+  gait:               ['left_knee', 'right_knee', 'left_hip', 'right_hip'],
+  forward_bend:       ['left_hip', 'right_hip', 'left_knee', 'right_knee'],
+  shoulder_flexion:   ['left_shoulder', 'right_shoulder'],
+  trunk_rotation:     ['left_shoulder', 'right_shoulder', 'left_hip', 'right_hip'],
+  hip_flexion:        ['left_hip', 'right_hip', 'left_knee', 'right_knee'],
+  ankle_dorsiflexion: ['left_ankle', 'right_ankle'],
+  neck_flexion:       [],
+  neck_rotation:      [],
+  manual_entry:       [],
+};
+
+// Minimum ROM range (degrees) a required joint must show to confirm movement was captured
+const MIN_ROM_RANGE = 8;
+
+// Per-movement retake hints
+const RETAKE_HINTS = {
+  squat:              'Step back so your full legs (knees and hips) are visible. Keep the camera at waist height.',
+  sit_to_stand:       'Position the camera so your full legs and hips are in frame for the entire sit-to-stand motion.',
+  gait:               'Walk parallel to the camera so both legs are visible throughout the stride cycle.',
+  forward_bend:       'Stand facing the camera with hips and knees fully in frame before bending forward.',
+  shoulder_flexion:   'Ensure your arms, shoulders, and torso are all visible. Use a wider camera angle.',
+  trunk_rotation:     'Stand facing the camera so your full torso, shoulders, and hips are in frame.',
+  hip_flexion:        'Ensure your hips and knees are visible. Step back from the camera if needed.',
+  ankle_dorsiflexion: 'Point camera lower — ankles and feet must be fully visible for this test.',
+};
+
+function checkRetakeNeeded(movementType, rangesOfMotion) {
+  const required = REQUIRED_JOINTS[movementType] ?? [];
+  const missing = required.filter((j) => {
+    const rom = rangesOfMotion[j];
+    return !rom || rom.range < MIN_ROM_RANGE;
+  });
+  if (missing.length === 0) return null;
+  const hint = RETAKE_HINTS[movementType] ?? 'Ensure your full body is visible and complete the full motion.';
+  return { missing, hint };
+}
+
+function CaptureResults({ result, activeConfig, onImportFindings, onRetake }) {
+  const retake = checkRetakeNeeded(activeConfig.id, result.range_of_motion || {});
+  const rom = result.range_of_motion || {};
+  const flags = result.all_flags || [];
+
+  function handleImport() {
+    const findings = result.suggested_findings?.length
+      ? result.suggested_findings
+      : [{ body_part: activeConfig.body_parts?.[0] || activeConfig.label, side: 'Both', sensations: [] }];
+    onImportFindings(findings, rom, result.quality_score);
+  }
+
+  return (
+    <div className="space-y-3">
+      {retake ? (
+        <div className="rounded-[20px] border border-[#F0D4D4] bg-[#FFF6F6] px-4 py-4">
+          <div className="mb-1 text-sm font-bold text-[#9B4B4B]">Key joints not captured — retake recommended</div>
+          <p className="mb-2 text-xs text-[#9B4B4B]">
+            Missing: <span className="font-semibold">{retake.missing.map((j) => j.replace(/_/g, ' ')).join(', ')}</span>
+          </p>
+          <p className="text-xs text-[#9B4B4B]">{retake.hint}</p>
+          <button type="button" onClick={onRetake} className="mt-3 rounded-[14px] bg-[#9B4B4B] px-4 py-2 text-xs font-black uppercase tracking-wide text-white">
+            Retake Video
+          </button>
+        </div>
+      ) : null}
+
+      <div className="grid gap-3 sm:grid-cols-3">
+        <div className="rounded-[18px] border border-[#E6ECF5] bg-white px-4 py-3">
+          <div className="text-2xl font-black text-[#17303A]">{result.quality_score ?? '—'}</div>
+          <div className="text-[10px] font-black uppercase tracking-[0.18em] text-[#98A1B2]">Quality Score</div>
+        </div>
+        <div className="rounded-[18px] border border-[#E6ECF5] bg-white px-4 py-3">
+          <div className="text-lg font-black text-[#17303A]">{result.quality_label ?? '—'}</div>
+          <div className="text-[10px] font-black uppercase tracking-[0.18em] text-[#98A1B2]">Movement Label</div>
+        </div>
+        <div className="rounded-[18px] border border-[#E6ECF5] bg-white px-4 py-3">
+          <div className="text-lg font-black text-[#17303A]">{result.frames_analyzed || 0}</div>
+          <div className="text-[10px] font-black uppercase tracking-[0.18em] text-[#98A1B2]">Frames Analyzed</div>
+        </div>
+      </div>
+
+      {Object.keys(rom).length > 0 ? (
+        <div className="rounded-[20px] border border-[#E6ECF5] bg-white px-4 py-4">
+          <div className="mb-2 text-[10px] font-black uppercase tracking-[0.22em] text-[#98A1B2]">Range of Motion</div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {Object.entries(rom).map(([joint, values]) => {
+              const isRequired = (REQUIRED_JOINTS[activeConfig.id] ?? []).includes(joint);
+              const isLow = values.range < MIN_ROM_RANGE;
+              return (
+                <div key={joint} className={`rounded-[16px] px-3 py-3 text-sm ${isRequired && isLow ? 'border border-[#F0D4D4] bg-[#FFF6F6]' : 'bg-[#F8FAFD]'}`}>
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-[#17303A]">{joint.replaceAll('_', ' ')}</span>
+                    {isRequired && isLow ? <span className="text-[10px] font-bold text-[#9B4B4B]">LOW</span> : null}
+                  </div>
+                  <div className="mt-1 text-[#5E6B7D]">Range {values.range}° · Min {values.min}° · Max {values.max}°</div>
+                  {values.frames ? <div className="mt-0.5 text-[10px] text-[#98A1B2]">{values.frames} frames</div> : null}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
+
+      {flags.length > 0 ? (
+        <div className="rounded-[20px] border border-[#F4E3B2] bg-[#FFF9E8] px-4 py-4">
+          <div className="mb-2 text-[10px] font-black uppercase tracking-[0.22em] text-[#A67516]">Movement Flags</div>
+          <div className="space-y-2">
+            {flags.slice(0, 4).map((flag) => (
+              <div key={flag} className="text-sm leading-6 text-[#7B5A18]">• {flag}</div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      <button
+        type="button"
+        onClick={handleImport}
+        className="inline-flex items-center gap-2 rounded-[16px] bg-[#17303A] px-5 py-3 text-xs font-black uppercase tracking-[0.18em] text-white"
+      >
+        <Plus size={14} />
+        Import Capture Findings
+      </button>
+    </div>
+  );
+}
+
+const JOINT_COLORS = {
+  left_shoulder: '#60A5FA',  right_shoulder: '#60A5FA',  // blue
+  left_elbow:    '#93C5FD',  right_elbow:    '#93C5FD',  // light blue
+  left_hip:      '#34D399',  right_hip:      '#34D399',  // green
+  left_knee:     '#F97316',  right_knee:     '#F97316',  // orange
+  left_ankle:    '#FCD34D',  right_ankle:    '#FCD34D',  // yellow
+};
+
+const SKELETON_CONNECTIONS = [
+  [11, 13], [13, 15],  // left arm
+  [12, 14], [14, 16],  // right arm
+  [11, 12],            // shoulders
+  [11, 23], [12, 24],  // torso sides
+  [23, 24],            // hips
+  [23, 25], [25, 27],  // left leg
+  [24, 26], [26, 28],  // right leg
+];
+
+const LANDMARK_JOINT_MAP = {
+  11: 'left_shoulder',  12: 'right_shoulder',
+  13: 'left_elbow',     14: 'right_elbow',
+  23: 'left_hip',       24: 'right_hip',
+  25: 'left_knee',      26: 'right_knee',
+  27: 'left_ankle',     28: 'right_ankle',
+};
+
+// Joint whose angle label renders near that landmark index
+const ANGLE_LABEL_AT = {
+  11: 'left_shoulder',  12: 'right_shoulder',
+  23: 'left_hip',       24: 'right_hip',
+  25: 'left_knee',      26: 'right_knee',
+};
+
+function drawPoseOverlay(canvas, landmarks, jointAngles) {
+  if (!canvas || !landmarks?.length) return;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const W = canvas.width, H = canvas.height;
+  const pt = (i) => ({ x: landmarks[i].x * W, y: landmarks[i].y * H });
+
+  // Skeleton lines
+  ctx.lineWidth = 2;
+  for (const [a, b] of SKELETON_CONNECTIONS) {
+    const pa = pt(a), pb = pt(b);
+    if (landmarks[a].visibility < 0.4 || landmarks[b].visibility < 0.4) continue;
+    ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+    ctx.beginPath();
+    ctx.moveTo(pa.x, pa.y);
+    ctx.lineTo(pb.x, pb.y);
+    ctx.stroke();
+  }
+
+  // Colored joint circles
+  for (const [idxStr, jointName] of Object.entries(LANDMARK_JOINT_MAP)) {
+    const idx = Number(idxStr);
+    if (landmarks[idx].visibility < 0.4) continue;
+    const { x, y } = pt(idx);
+    const color = JOINT_COLORS[jointName] || '#fff';
+    ctx.fillStyle = color;
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 6;
+    ctx.beginPath();
+    ctx.arc(x, y, 6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+  }
+
+  // Angle labels near key joints
+  ctx.font = 'bold 11px monospace';
+  for (const [idxStr, jointName] of Object.entries(ANGLE_LABEL_AT)) {
+    const idx = Number(idxStr);
+    const angle = jointAngles?.[jointName];
+    if (angle == null || landmarks[idx].visibility < 0.4) continue;
+    const { x, y } = pt(idx);
+    const color = JOINT_COLORS[jointName] || '#fff';
+    const label = `${jointName.replace(/_/g, ' ')} ${Math.round(angle)}°`;
+    const tw = ctx.measureText(label).width;
+    const bx = Math.min(x + 8, W - tw - 6);
+    ctx.fillStyle = 'rgba(0,0,0,0.65)';
+    ctx.fillRect(bx - 2, y - 12, tw + 6, 16);
+    ctx.fillStyle = color;
+    ctx.fillText(label, bx, y);
+  }
+}
+
+const ALL_JOINTS = [
+  'left_shoulder', 'right_shoulder', 'left_elbow', 'right_elbow',
+  'left_hip', 'right_hip', 'left_knee', 'right_knee',
+  'left_ankle', 'right_ankle',
+];
+
+function computeROMFromAngles(allAngles) {
+  const ranges = {};
+  for (const joint of ALL_JOINTS) {
+    // Only use readings where the joint was actually visible (value present)
+    const vals = allAngles.map((a) => a[joint]).filter((v) => v != null && !Number.isNaN(v));
+    if (vals.length < 2) continue;
+    const min = Math.round(Math.min(...vals) * 10) / 10;
+    const max = Math.round(Math.max(...vals) * 10) / 10;
+    ranges[joint] = {
+      min,
+      max,
+      range: Math.round((max - min) * 10) / 10,
+      avg: Math.round((vals.reduce((a, b) => a + b, 0) / vals.length) * 10) / 10,
+      frames: vals.length,
+    };
+  }
+  return ranges;
+}
+
+function scoreFromROM(ranges) {
+  let score = 50;
+  const avg = (j1, j2) => ((ranges[j1]?.range ?? 0) + (ranges[j2]?.range ?? 0)) / 2;
+  const diff = (j1, j2) => Math.abs((ranges[j1]?.range ?? 0) - (ranges[j2]?.range ?? 0));
+  score += Math.min(20, avg('left_knee', 'right_knee') / 3);
+  score += Math.min(15, avg('left_hip', 'right_hip') / 2.5);
+  score += Math.min(15, avg('left_shoulder', 'right_shoulder') / 4);
+  score -= Math.min(10, diff('left_knee', 'right_knee') / 2);
+  score -= Math.min(10, diff('left_hip', 'right_hip') / 2);
+  score = Math.max(30, Math.min(95, Math.round(score)));
+  const label = score >= 82 ? 'Excellent' : score >= 68 ? 'Good' : score >= 52 ? 'Moderate' : 'Limited';
+  return { score, label };
+}
+
 function MotionCapturePanel({ activeConfig, onImportFindings }) {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
+  const overlayCanvasRef = useRef(null);
   const streamRef = useRef(null);
   const intervalRef = useRef(null);
   const previewRequestRef = useRef(0);
+  const poseInFlightRef = useRef(false);
+  const collectedAnglesRef = useRef([]);
 
   const [phase, setPhase] = useState('idle');
   const [progress, setProgress] = useState(0);
   const [result, setResult] = useState(null);
   const [errorMsg, setErrorMsg] = useState('');
   const [previewReady, setPreviewReady] = useState(false);
+  const [liveAngles, setLiveAngles] = useState(null);
+  const [liveLandmarks, setLiveLandmarks] = useState(null);
 
   const stopStream = useCallback(() => {
     streamRef.current?.getTracks().forEach((track) => track.stop());
@@ -460,6 +733,16 @@ function MotionCapturePanel({ activeConfig, onImportFindings }) {
     clearInterval(intervalRef.current);
     stopStream();
   }, [stopStream]);
+
+  // Redraw skeleton overlay whenever landmarks/angles update
+  useEffect(() => {
+    const canvas = overlayCanvasRef.current;
+    const video = videoRef.current;
+    if (!canvas || !video) return;
+    canvas.width = video.clientWidth || 320;
+    canvas.height = video.clientHeight || 240;
+    drawPoseOverlay(canvas, liveLandmarks, liveAngles);
+  }, [liveLandmarks, liveAngles]);
 
   const ensurePreview = useCallback(async () => {
     if (streamRef.current && videoRef.current?.srcObject) {
@@ -506,6 +789,8 @@ function MotionCapturePanel({ activeConfig, onImportFindings }) {
     setProgress(0);
     setResult(null);
     setErrorMsg('');
+    setLiveAngles(null);
+    collectedAnglesRef.current = [];
 
     try {
       const ready = await ensurePreview();
@@ -522,8 +807,29 @@ function MotionCapturePanel({ activeConfig, onImportFindings }) {
         canvas.height = 240;
         const ctx = canvas.getContext('2d');
         ctx.drawImage(video, 0, 0, 320, 240);
-        captured.push(canvas.toDataURL('image/jpeg', 0.7).split(',')[1]);
+        const b64 = canvas.toDataURL('image/jpeg', 0.7).split(',')[1];
+        captured.push(b64);
         setProgress(Math.round((captured.length / TOTAL_MOTION_FRAMES) * 100));
+
+        // Poll live pose every 4th frame (~2x/sec)
+        if (captured.length % 4 === 0 && !poseInFlightRef.current) {
+          poseInFlightRef.current = true;
+          fetch(`${BACKEND}/api/analyze-pose`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ frame_b64: b64 }),
+          })
+            .then((r) => r.json())
+            .then((data) => {
+              if (data?.joint_angles) {
+                collectedAnglesRef.current.push(data.joint_angles);
+                setLiveAngles(data.joint_angles);
+              }
+              if (data?.landmarks) setLiveLandmarks(data.landmarks);
+              poseInFlightRef.current = false;
+            })
+            .catch(() => { poseInFlightRef.current = false; });
+        }
 
         if (captured.length >= TOTAL_MOTION_FRAMES) {
           clearInterval(intervalRef.current);
@@ -553,19 +859,27 @@ function MotionCapturePanel({ activeConfig, onImportFindings }) {
       setResult(data);
       setPhase('done');
     } catch {
+      // Fall back to angles collected live during recording via /api/analyze-pose
+      const collected = collectedAnglesRef.current;
+      if (collected.length === 0) {
+        // Backend offline — no angles captured at all
+        setResult({ detected: false, backendOffline: true });
+        setPhase('done');
+        return;
+      }
+      const rom = computeROMFromAngles(collected);
+      const hasROM = Object.keys(rom).length > 0;
+      const { score, label } = hasROM ? scoreFromROM(rom) : { score: 0, label: 'Unknown' };
       setResult({
         detected: true,
-        quality_score: 61,
-        quality_label: 'Moderate',
-        all_flags: [`${activeConfig.label} capture used demo movement analysis.`],
-        range_of_motion: {},
-        suggested_findings: [
-          {
-            body_part: activeConfig.body_parts[0] || activeConfig.label,
-            side: 'Both',
-            sensations: ['Stiff'],
-          },
-        ],
+        frames_analyzed: collected.length,
+        quality_score: score,
+        quality_label: label,
+        all_flags: hasROM ? [] : ['No pose detected — ensure your full body is visible in frame.'],
+        range_of_motion: rom,
+        suggested_findings: hasROM ? [
+          { body_part: activeConfig.body_parts?.[0] || activeConfig.label, side: 'Both', sensations: score < 60 ? ['Stiff', 'Tight'] : ['Stiff'] },
+        ] : [],
       });
       setPhase('done');
     }
@@ -573,9 +887,14 @@ function MotionCapturePanel({ activeConfig, onImportFindings }) {
 
   function resetCapture() {
     clearInterval(intervalRef.current);
+    collectedAnglesRef.current = [];
     setPhase('idle');
     setProgress(0);
     setResult(null);
+    setLiveAngles(null);
+    setLiveLandmarks(null);
+    const oc = overlayCanvasRef.current;
+    if (oc) oc.getContext('2d').clearRect(0, 0, oc.width, oc.height);
     ensurePreview();
   }
 
@@ -623,8 +942,13 @@ function MotionCapturePanel({ activeConfig, onImportFindings }) {
                 {errorMsg ? 'Camera unavailable' : 'Starting camera preview…'}
               </div>
             ) : null}
+            {/* Skeleton overlay — always present, drawn via canvas */}
+            <canvas
+              ref={overlayCanvasRef}
+              className="absolute inset-0 w-full h-full pointer-events-none"
+            />
             {phase === 'capturing' ? (
-              <div className="absolute inset-x-0 bottom-0 px-4 pb-4">
+              <div className="absolute inset-x-0 bottom-0 px-4 pb-4 pointer-events-none">
                 <div className="h-2 overflow-hidden rounded-full bg-white/20">
                   <div className="h-full rounded-full bg-sky-400 transition-all" style={{ width: `${progress}%` }} />
                 </div>
@@ -657,58 +981,25 @@ function MotionCapturePanel({ activeConfig, onImportFindings }) {
           <div className="rounded-[20px] border border-[#F5D7D7] bg-[#FFF8F8] px-4 py-4 text-sm text-[#9B4B4B]">{errorMsg}</div>
         ) : null}
 
-        {phase === 'done' && result?.detected ? (
-          <div className="space-y-3">
-            <div className="grid gap-3 sm:grid-cols-3">
-              <div className="rounded-[18px] border border-[#E6ECF5] bg-white px-4 py-3">
-                <div className="text-2xl font-black text-[#17303A]">{result.quality_score}</div>
-                <div className="text-[10px] font-black uppercase tracking-[0.18em] text-[#98A1B2]">Quality Score</div>
-              </div>
-              <div className="rounded-[18px] border border-[#E6ECF5] bg-white px-4 py-3">
-                <div className="text-lg font-black text-[#17303A]">{result.quality_label}</div>
-                <div className="text-[10px] font-black uppercase tracking-[0.18em] text-[#98A1B2]">Movement Label</div>
-              </div>
-              <div className="rounded-[18px] border border-[#E6ECF5] bg-white px-4 py-3">
-                <div className="text-lg font-black text-[#17303A]">{result.frames_analyzed || 0}</div>
-                <div className="text-[10px] font-black uppercase tracking-[0.18em] text-[#98A1B2]">Frames Analyzed</div>
-              </div>
-            </div>
-
-            {Object.keys(result.range_of_motion || {}).length > 0 ? (
-              <div className="rounded-[20px] border border-[#E6ECF5] bg-white px-4 py-4">
-                <div className="mb-2 text-[10px] font-black uppercase tracking-[0.22em] text-[#98A1B2]">Range of Motion</div>
-                <div className="grid gap-2 sm:grid-cols-2">
-                  {Object.entries(result.range_of_motion).slice(0, 6).map(([joint, values]) => (
-                    <div key={joint} className="rounded-[16px] bg-[#F8FAFD] px-3 py-3 text-sm text-[#5E6B7D]">
-                      <div className="font-bold text-[#17303A]">{joint.replaceAll('_', ' ')}</div>
-                      <div className="mt-1">Range {values.range}° · Min {values.min}° · Max {values.max}°</div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : null}
-
-            {(result.all_flags || []).length > 0 ? (
-              <div className="rounded-[20px] border border-[#F4E3B2] bg-[#FFF9E8] px-4 py-4">
-                <div className="mb-2 text-[10px] font-black uppercase tracking-[0.22em] text-[#A67516]">Movement Flags</div>
-                <div className="space-y-2">
-                  {result.all_flags.slice(0, 4).map((flag) => (
-                    <div key={flag} className="text-sm leading-6 text-[#7B5A18]">• {flag}</div>
-                  ))}
-                </div>
-              </div>
-            ) : null}
-
-            <button
-              type="button"
-              onClick={() => onImportFindings(result.suggested_findings || [])}
-              disabled={!result.suggested_findings?.length}
-              className="inline-flex items-center gap-2 rounded-[16px] bg-[#17303A] px-5 py-3 text-xs font-black uppercase tracking-[0.18em] text-white disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              <Plus size={14} />
-              Import Capture Findings
+        {phase === 'done' && result?.backendOffline ? (
+          <div className="rounded-[20px] border border-[#F5D7D7] bg-[#FFF8F8] px-4 py-4">
+            <div className="mb-1 text-sm font-bold text-[#9B4B4B]">Backend server not running</div>
+            <p className="text-xs text-[#9B4B4B]">
+              Start the Python backend (<code className="rounded bg-[#F5D7D7] px-1">cd backend && python main.py</code>) to enable real-time angle scoring.
+            </p>
+            <button type="button" onClick={resetCapture} className="mt-3 rounded-[14px] bg-[#17303A] px-4 py-2 text-xs font-black uppercase tracking-wide text-white">
+              Try Again
             </button>
           </div>
+        ) : null}
+
+        {phase === 'done' && result?.detected ? (
+          <CaptureResults
+            result={result}
+            activeConfig={activeConfig}
+            onImportFindings={onImportFindings}
+            onRetake={resetCapture}
+          />
         ) : null}
       </div>
     </div>

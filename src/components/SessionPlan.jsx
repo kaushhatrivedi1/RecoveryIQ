@@ -1,19 +1,34 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
   Brain,
+  ChevronDown,
+  ChevronRight,
+  Download,
   Dumbbell,
   Eye,
   FileText,
   MessageCircle,
+  Network,
   Play,
   Send,
   Sparkles,
   Sun,
   Trash2,
+  TrendingUp,
   Wifi,
   X,
+  Zap,
 } from 'lucide-react';
+import {
+  CartesianGrid,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts';
 import {
   BODY_ZONES,
   HOME_EXERCISES_MAP,
@@ -21,6 +36,38 @@ import {
   PROTOCOLS,
   SESSION_GOALS,
 } from '../data/mockData';
+
+// ── Progress tracking (localStorage) ────────────────────────────────────────
+const PROGRESS_KEY = (name) => `riq_progress_${(name || 'guest').toLowerCase().replace(/\s+/g, '_')}`;
+
+function saveProgressSnapshot(patientName, assessmentData, measuredAngles) {
+  if (!measuredAngles || !Object.keys(measuredAngles).length) return;
+  try {
+    const key = PROGRESS_KEY(patientName);
+    const existing = JSON.parse(localStorage.getItem(key) || '[]');
+    const snapshot = {
+      date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+      ts: Date.now(),
+      angles: Object.fromEntries(
+        Object.entries(measuredAngles).map(([j, d]) => [j, d.range])
+      ),
+      zones: assessmentData?.zones || [],
+    };
+    const updated = [...existing.slice(-11), snapshot];
+    localStorage.setItem(key, JSON.stringify(updated));
+  } catch {
+    // localStorage unavailable
+  }
+}
+
+function loadProgressHistory(patientName) {
+  try {
+    const key = PROGRESS_KEY(patientName);
+    return JSON.parse(localStorage.getItem(key) || '[]');
+  } catch {
+    return [];
+  }
+}
 
 const TABS = [
   { id: 'pad', label: 'Pad Placement', Icon: Sun },
@@ -319,6 +366,20 @@ function BodyPlacementCanvas({ title, markers, rear = false }) {
   );
 }
 
+function extractMeasuredAngles(romFindings) {
+  const merged = {};
+  romFindings.forEach((finding) => {
+    if (finding.range_of_motion && Object.keys(finding.range_of_motion).length > 0) {
+      Object.entries(finding.range_of_motion).forEach(([joint, data]) => {
+        if (!merged[joint] || (data.range || 0) > (merged[joint].range || 0)) {
+          merged[joint] = { ...data, test: finding.test_label };
+        }
+      });
+    }
+  });
+  return merged;
+}
+
 function deriveAnalysis(assessmentData, planData, variant = 1) {
   const zoneLabels = (assessmentData?.zones || []).map(zoneName);
   const romFindings = assessmentData?.romFindings || [];
@@ -326,6 +387,8 @@ function deriveAnalysis(assessmentData, planData, variant = 1) {
   const hasTrunkRotation = romFindings.some((item) => item.test === 'trunk_rotation');
   const hasMidBack = zoneLabels.some((label) => /mid back|upper back|lower back/i.test(label));
   const hasHip = zoneLabels.some((label) => /hip/i.test(label));
+  const measuredAngles = extractMeasuredAngles(romFindings);
+  const hasAngles = Object.keys(measuredAngles).length > 0;
 
   if (variant === 1 && (hasTrunkRotation || hasMidBack)) {
     return {
@@ -350,14 +413,6 @@ function deriveAnalysis(assessmentData, planData, variant = 1) {
         'Sacroiliac joints: potential downstream compensation if lumbar rotation becomes excessive.',
         'Scapulothoracic region: may develop secondary tension if thoracic restriction persists.',
       ],
-      findings: [
-        'Primary complaint centers on the mid-back with limited ROM and intermittent symptoms.',
-        'Trunk rotation reproduces bilateral lower-back stiffness, tightness, and achiness.',
-        'Sitting longer than 30 minutes aggravates the pattern by reinforcing thoracic flexion.',
-        'Stretching provides relief, which supports a movement-responsive tissue restriction rather than structural damage.',
-        'Hip flexor tightness is absent, which argues against a psoas-driven anterior chain pattern.',
-        'Duration is under 6 weeks, favoring an acute adaptation rather than chronic remodeling.',
-      ],
       retests: [
         'Seated trunk rotation ROM: look for bilateral improvement and less lumbar substitution.',
         'Thoracic extension in sphinx pose: look for better segmental extension with less lumbar hyperextension.',
@@ -366,6 +421,21 @@ function deriveAnalysis(assessmentData, planData, variant = 1) {
       confidence:
         'Confidence is moderate-high because the complaint location, trunk-rotation response, sitting aggravation, and stretching relief all point to a thoracic mobility-driven compensation pattern. Confidence would increase further with manual palpation or quantified sitting exposure.',
       sourceText: planData?.analysis_1 || '',
+      measuredAngles,
+      hasAngles,
+      findings: [
+        'Primary complaint centers on the mid-back with limited ROM and intermittent symptoms.',
+        'Trunk rotation reproduces bilateral lower-back stiffness, tightness, and achiness.',
+        'Sitting longer than 30 minutes aggravates the pattern by reinforcing thoracic flexion.',
+        'Stretching provides relief, which supports a movement-responsive tissue restriction rather than structural damage.',
+        'Hip flexor tightness is absent, which argues against a psoas-driven anterior chain pattern.',
+        'Duration is under 6 weeks, favoring an acute adaptation rather than chronic remodeling.',
+        ...(hasAngles
+          ? Object.entries(measuredAngles)
+              .slice(0, 3)
+              .map(([joint, data]) => `Camera capture — ${joint.replaceAll('_', ' ')}: ${data.range}° total excursion (${data.min}°–${data.max}°) during ${data.test || 'movement test'}.`)
+          : []),
+      ],
     };
   }
 
@@ -397,6 +467,11 @@ function deriveAnalysis(assessmentData, planData, variant = 1) {
         'Thoracic ROM loss suggests a true thoracic restriction rather than only lumbar guarding.',
         'No clear lumbar instability signs such as catching or giving way were reported.',
         'Duration under 6 weeks makes substantial stabilizer deconditioning less likely.',
+        ...(hasAngles
+          ? Object.entries(measuredAngles)
+              .slice(0, 2)
+              .map(([joint, data]) => `Camera capture — ${joint.replaceAll('_', ' ')}: ${data.range}° excursion (${data.min}°–${data.max}°) during ${data.test || 'movement test'}.`)
+          : []),
       ],
       retests: [
         'Quadruped bird-dog endurance: compare side-to-side control and trunk drift.',
@@ -406,6 +481,8 @@ function deriveAnalysis(assessmentData, planData, variant = 1) {
       confidence:
         'Confidence is lower because the evidence fits compensation better than a primary lumbar driver. This pattern would move up if instability testing, core-endurance testing, or broader lumbar symptom provocation supported it.',
       sourceText: planData?.analysis_2 || '',
+      measuredAngles,
+      hasAngles,
     };
   }
 
@@ -422,10 +499,16 @@ function deriveAnalysis(assessmentData, planData, variant = 1) {
     narrative: fallbackText || '',
     chainMap: [],
     compensations: [],
-    findings: [],
+    findings: hasAngles
+      ? Object.entries(measuredAngles)
+          .slice(0, 4)
+          .map(([joint, data]) => `Camera capture — ${joint.replaceAll('_', ' ')}: ${data.range}° excursion (${data.min}°–${data.max}°) during ${data.test || 'movement test'}.`)
+      : [],
     retests: [],
     confidence: 'Confidence depends on the available intake detail, ROM findings, and activity history.',
     sourceText: fallbackText || '',
+    measuredAngles,
+    hasAngles,
   };
 }
 
@@ -613,6 +696,28 @@ function AnalysisPanel({ analysis, emphasis = 'primary' }) {
           <div className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-400">Confidence Justification</div>
           <p className="mt-3 text-sm leading-7 text-slate-700">{analysis.confidence}</p>
         </div>
+
+        {analysis.hasAngles ? (
+          <div className="mt-5">
+            <div className="mb-3 text-[10px] font-black uppercase tracking-[0.22em] text-slate-400">
+              Measured ROM — Camera Capture
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              {Object.entries(analysis.measuredAngles).map(([joint, data]) => (
+                <div key={joint} className="riq-stat p-4">
+                  <div className="text-sm font-black text-slate-950">{joint.replaceAll('_', ' ')}</div>
+                  <div className="mt-2 flex items-end gap-3">
+                    <span className="text-2xl font-black text-sky-600">{data.range}°</span>
+                    <span className="mb-0.5 text-xs text-slate-400">excursion</span>
+                  </div>
+                  <div className="mt-1 text-xs text-slate-500">
+                    Min {data.min}° · Max {data.max}° · {data.test || 'movement test'}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
       </section>
     </div>
   );
@@ -689,6 +794,20 @@ function ReportModal({ open, onClose, assessmentData, planData }) {
                   <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Pain Duration</div>
                   <div className="mt-1 text-2xl font-black text-sky-700">{assessmentData?.primaryDuration || 'Acute'}</div>
                 </div>
+                {primaryAnalysis.hasAngles ? (
+                  <div className="riq-stat p-5 sm:col-span-2">
+                    <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Measured ROM — Camera Capture</div>
+                    <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                      {Object.entries(primaryAnalysis.measuredAngles).slice(0, 6).map(([joint, data]) => (
+                        <div key={joint} className="rounded-[14px] bg-sky-50 px-3 py-2 text-center">
+                          <div className="text-xl font-black text-sky-700">{data.range}°</div>
+                          <div className="mt-0.5 text-[9px] font-black uppercase tracking-[0.15em] text-sky-500">{joint.replaceAll('_', ' ')}</div>
+                          <div className="mt-0.5 text-[10px] text-slate-500">{data.min}°–{data.max}°</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
               </div>
             </section>
 
