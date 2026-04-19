@@ -143,41 +143,36 @@ export default function VoiceIntake({ patientName, elevenKey, onIntakeComplete, 
   } = useSpeechRecognition();
 
   const currentQ = QUESTIONS[step];
+  const [started, setStarted] = useState(false);
 
-  // Speak current question only when step changes — NOT on every prop change.
-  // elevenKey/patientName intentionally excluded: capturing them at effect time via ref.
-  const elevenKeyRef = useRef(elevenKey);
-  const patientNameRef = useRef(patientName);
-  const spokenStepRef = useRef(-1); // prevents StrictMode double-fire
-  useEffect(() => { elevenKeyRef.current = elevenKey; }, [elevenKey]);
-  useEffect(() => { patientNameRef.current = patientName; }, [patientName]);
-
-  useEffect(() => {
-    if (done) return;
-    if (spokenStepRef.current === step) return; // already speaking this step
-    spokenStepRef.current = step;
-
-    const text = step === 0
-      ? `Hello ${patientNameRef.current || 'there'}! ${QUESTIONS[step].text}`
-      : QUESTIONS[step].text;
+  // Speak directly — always called from a user click, never from an effect.
+  // Chrome blocks audio from async effects (autoplay policy requires user gesture).
+  function doSpeak(text) {
     setSpeaking(true);
-    speakQuestion(text, elevenKeyRef.current).then(() => setSpeaking(false));
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [step, done]);
+    speakQuestion(text, elevenKey).then(() => setSpeaking(false));
+  }
+
+  function handleStart() {
+    setStarted(true);
+    doSpeak(`Hello ${patientName || 'there'}! ${QUESTIONS[0].text}`);
+  }
+
+  function handleReplay() {
+    doSpeak(step === 0
+      ? `Hello ${patientName || 'there'}! ${currentQ.text}`
+      : currentQ.text);
+  }
 
   async function handleSubmitAnswer() {
     const answer = currentTranscript.trim();
     if (!answer) return;
-
     setProcessing(true);
 
     const newAnswers = { ...answers, [currentQ.id]: answer };
     setAnswers(newAnswers);
-
     const combined = Object.values(newAnswers).join('. ');
 
     if (step === QUESTIONS.length - 1) {
-      // All questions answered — analyze combined transcript
       try {
         const res = await fetch(`${BACKEND}/api/analyze-speech`, {
           method: 'POST',
@@ -187,15 +182,9 @@ export default function VoiceIntake({ patientName, elevenKey, onIntakeComplete, 
         const data = await res.json();
         setDone(true);
         setProcessing(false);
-
-        await speakQuestion(
-          `Thank you ${patientName || ''}. I've captured your wellness information. Your practitioner will review this before the session.`,
-          elevenKey
-        );
-
+        doSpeak(`Thank you ${patientName || ''}. I've captured your wellness information. Your practitioner will review this before the session.`);
         onIntakeComplete(data);
       } catch {
-        // Fallback: basic extraction
         setDone(true);
         setProcessing(false);
         onIntakeComplete({
@@ -207,9 +196,12 @@ export default function VoiceIntake({ patientName, elevenKey, onIntakeComplete, 
         });
       }
     } else {
+      const nextStep = step + 1;
       setProcessing(false);
       setCurrentTranscript('');
-      setStep(s => s + 1);
+      setStep(nextStep);
+      // Speak next question directly from this click handler (user gesture context)
+      doSpeak(QUESTIONS[nextStep].text);
     }
   }
 
@@ -245,20 +237,45 @@ export default function VoiceIntake({ patientName, elevenKey, onIntakeComplete, 
             <h3 className="mb-2 text-xl font-bold text-slate-950">Voice Intake Complete</h3>
             <p className="text-sm text-slate-500">All responses captured and analyzed. Client brief is being generated.</p>
           </div>
+        ) : !started ? (
+          <div className="text-center py-8">
+            <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-sky-50 border border-sky-200">
+              <Volume2 size={28} className="text-sky-600" />
+            </div>
+            <h3 className="mb-2 text-lg font-semibold text-slate-900">Ready to begin</h3>
+            <p className="mb-6 text-sm text-slate-500 max-w-xs mx-auto">
+              Tap Start — the AI will ask {QUESTIONS.length} short questions out loud. Answer by speaking or typing.
+            </p>
+            <button
+              onClick={handleStart}
+              className="riq-button mx-auto"
+            >
+              <Volume2 size={16} /> Start Voice Intake
+            </button>
+          </div>
         ) : (
           <>
             <div className="mb-6">
-              <div className="flex items-center gap-2 mb-3">
-                {speaking ? (
-                  <Volume2 size={16} className="shrink-0 animate-pulse text-sky-600" />
-                ) : (
-                  <div className="flex h-5 w-5 items-center justify-center rounded-full border-2 border-sky-500">
-                    <span className="text-xs font-bold text-sky-600">{step + 1}</span>
-                  </div>
-                )}
-                <span className="text-xs uppercase tracking-wider text-slate-400">
-                  {speaking ? 'AI speaking...' : 'Question'}
-                </span>
+              <div className="flex items-center justify-between gap-2 mb-3">
+                <div className="flex items-center gap-2">
+                  {speaking ? (
+                    <Volume2 size={16} className="shrink-0 animate-pulse text-sky-600" />
+                  ) : (
+                    <div className="flex h-5 w-5 items-center justify-center rounded-full border-2 border-sky-500">
+                      <span className="text-xs font-bold text-sky-600">{step + 1}</span>
+                    </div>
+                  )}
+                  <span className="text-xs uppercase tracking-wider text-slate-400">
+                    {speaking ? 'AI speaking...' : 'Question'}
+                  </span>
+                </div>
+                <button
+                  onClick={handleReplay}
+                  disabled={speaking}
+                  className="flex items-center gap-1 rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-500 hover:border-sky-300 hover:text-sky-600 disabled:opacity-40 transition-colors"
+                >
+                  <Volume2 size={12} /> Replay
+                </button>
               </div>
               <p className="text-base leading-relaxed text-slate-900">{currentQ.text}</p>
             </div>
